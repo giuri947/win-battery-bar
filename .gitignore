@@ -1,0 +1,7 @@
+build/
+e2e_out/
+*.exe
+*.obj
+*.pdb
+*.user
+.vs/

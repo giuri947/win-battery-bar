@@ -1,0 +1,120 @@
+name: Build & Visual E2E Test (Windows)
+
+on:
+  push:
+    branches-ignore:
+      - ci-results
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional release tag (e.g. v1.0.0) to publish WinBatteryBar.exe'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-test:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare CI output directory
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$PWD\ci_out\screenshots" | Out-Null
+
+      - name: Configure & Build WinBatteryBar.exe (MSVC x64 Release)
+        id: build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $log = "$PWD\ci_out\build.log"
+          "=== CMAKE CONFIGURE ===" | Out-File -FilePath $log -Encoding utf8
+          cmake -B build -G "Visual Studio 17 2022" -A x64 2>&1 | Tee-Object -FilePath $log -Append
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          "`n=== CMAKE BUILD ===" | Out-File -FilePath $log -Append -Encoding utf8
+          cmake --build build --config Release 2>&1 | Tee-Object -FilePath $log -Append
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Copy-Item "build\Release\WinBatteryBar.exe" "ci_out\WinBatteryBar.exe" -Force
+          (Get-Item "ci_out\WinBatteryBar.exe") | Format-List FullName, Length | Out-String | Tee-Object -FilePath $log -Append
+
+      - name: Run Windows 10 Taskbar E2E & Screenshot Suite
+        id: e2e
+        if: steps.build.outcome == 'success'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $log = "$PWD\ci_out\e2e.log"
+          .\tests\e2e_screenshot.ps1 -ExePath "$PWD\build\Release\WinBatteryBar.exe" -OutDir "$PWD\ci_out\screenshots" *>&1 | Tee-Object -FilePath $log
+          exit $LASTEXITCODE
+
+      - name: Publish logs, screenshots, and binary to ci-results branch
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = Join-Path $env:RUNNER_TEMP "ci-results-stage"
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          Copy-Item "$PWD\ci_out\*" $stage -Recurse -Force
+          @{
+            commit     = "${{ github.sha }}"
+            ref        = "${{ github.ref }}"
+            run_id     = "${{ github.run_id }}"
+            build      = "${{ steps.build.outcome }}"
+            e2e        = "${{ steps.e2e.outcome }}"
+            updated_at = (Get-Date).ToUniversalTime().ToString("o")
+          } | ConvertTo-Json | Out-File -FilePath (Join-Path $stage "summary.json") -Encoding utf8
+
+          Push-Location $stage
+          git init -b ci-results
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "ci: results for ${{ github.sha }} (build=${{ steps.build.outcome }}, e2e=${{ steps.e2e.outcome }})"
+          git remote add origin "https://x-access-token:${env:GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git push --force origin ci-results
+          Pop-Location
+
+      - name: Upload Screenshots & Logs Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: ci_out/
+          if-no-files-found: warn
+
+      - name: Upload WinBatteryBar.exe Artifact
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: WinBatteryBar-win64
+          path: build/Release/WinBatteryBar.exe
+
+      - name: Publish GitHub Release (on tag or manual release_tag)
+        if: steps.build.outcome == 'success' && steps.e2e.outcome == 'success' && (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != '')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = if ("${{ github.event.inputs.release_tag }}" -ne "") { "${{ github.event.inputs.release_tag }}" } else { "${{ github.ref_name }}" }
+          $exists = gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag "build\Release\WinBatteryBar.exe" --clobber
+          } else {
+            gh release create $tag "build\Release\WinBatteryBar.exe" `
+              --title "WinBatteryBar $tag" `
+              --notes "Native Windows 10 taskbar BatteryBar for Laptop, Bluetooth Mouse & Headphones (no tray icon). Just download and double-click ``WinBatteryBar.exe``."
+          }
