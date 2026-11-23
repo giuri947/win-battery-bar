@@ -23,7 +23,10 @@ bool IsFallbackCandidate(const MIB_IF_ROW2& row) {
     if (row.OperStatus != IfOperStatusUp) return false;
     if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK || row.Type == IF_TYPE_TUNNEL) return false;
     if (row.InterfaceAndOperStatusFlags.FilterInterface) return false;
-    return row.MediaType != NdisMediumUnspecified;
+    return row.InterfaceAndOperStatusFlags.ConnectorPresent != FALSE ||
+           row.Type == IF_TYPE_ETHERNET_CSMACD ||
+           row.Type == IF_TYPE_IEEE80211 ||
+           row.Type == IF_TYPE_PPP;
 }
 
 } // namespace
