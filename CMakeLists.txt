@@ -8,9 +8,11 @@ add_executable(WinBatteryBar WIN32
     src/main.cpp
     src/settings.cpp
     src/battery_reader.cpp
+    src/network_monitor.cpp
     src/taskbar_dock.cpp
     src/renderer.cpp
     src/tooltip_window.cpp
+    src/settings_window.cpp
     src/widget_window.cpp
     app.rc
 )
@@ -41,6 +43,7 @@ target_link_libraries(WinBatteryBar PRIVATE
     gdi32
     gdiplus
     setupapi
+    iphlpapi
     advapi32
     ole32
     shell32

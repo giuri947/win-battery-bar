@@ -16,6 +16,15 @@ public:
         const RECT& anchorScreenRect,
         UINT dpi,
         bool lightTheme,
+        bool horizontal = true,
+        int lowThreshold = 20);
+
+    void ShowForNetwork(
+        const NetworkStats& stats,
+        NetUnitMode units,
+        const RECT& anchorScreenRect,
+        UINT dpi,
+        bool lightTheme,
         bool horizontal = true);
 
     void ShowEmpty(
@@ -36,6 +45,8 @@ private:
         int percent,
         bool connected,
         bool charging,
+        int lowThreshold,
+        bool showBar,
         const RECT& anchorScreenRect,
         UINT dpi,
         bool lightTheme,

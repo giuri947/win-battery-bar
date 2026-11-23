@@ -220,7 +220,7 @@ function Stop-WidgetCleanly($proc) {
     Start-Sleep -Milliseconds 600
 }
 
-function Run-DemoScenario([string]$name, [string[]]$argsList) {
+function Run-DemoScenario([string]$name, [string[]]$argsList, [int]$cropWidth = 680, [int]$cropHeight = 160) {
     $statusPath = Join-Path $OutDir "${name}_status.json"
     if (Test-Path $statusPath) { Remove-Item $statusPath -Force }
     $fullArgs = $argsList + @("--status-file", $statusPath)
@@ -250,13 +250,17 @@ function Run-DemoScenario([string]$name, [string[]]$argsList) {
         throw "Scenario $name failed assertion: WinBatteryBarHostWnd top-level host window not found!"
     }
 
-    Capture-Scenario $name
+    Capture-Scenario $name $cropWidth $cropHeight
     $widthDuring = if ($geo) { $geo.TaskListWidth } else { -1 }
 
     Stop-WidgetCleanly $proc
     $hostAfter = [WinCapture]::FindByClass("WinBatteryBarHostWnd")
     if ($hostAfter -ne [IntPtr]::Zero) {
         throw "Scenario $name failed assertion: WinBatteryBarHostWnd leaked after exit!"
+    }
+    $settingsAfter = [WinCapture]::FindByClass("WinBatteryBarSettingsPanel")
+    if ($settingsAfter -ne [IntPtr]::Zero) {
+        throw "Scenario $name failed assertion: WinBatteryBarSettingsPanel leaked after exit!"
     }
     return [PSCustomObject]@{
         Status = $status
@@ -320,13 +324,37 @@ if (-not $r4.Status -or $r4.Status.deviceCount -ne 4) {
     throw "Scenario 04 failed assertion: deviceCount=$($r4.Status.deviceCount)"
 }
 
-# Scenario 5: 2-device BT-only compact mode (when laptop battery is hidden)
+# Scenario 5: 2-device BT-only compact mode (when laptop battery is hidden, showing 15% red headphones)
 $r5 = Run-DemoScenario "05_demo_bt_compact" @("--demo", "--demo-set", "2", "--demo-compact")
-if (-not $r5.Status -or $r5.Status.deviceCount -ne 2) {
-    throw "Scenario 05 failed assertion: deviceCount=$($r5.Status.deviceCount)"
+if (-not $r5.Status -or $r5.Status.deviceCount -ne 2 -or $r5.Status.displayStyle -ne "compact") {
+    throw "Scenario 05 failed assertion: deviceCount=$($r5.Status.deviceCount) style=$($r5.Status.displayStyle)"
 }
 
-# Scenario 6: Light Windows 10 taskbar theme preview
+# Scenario 9: Ultra-Compact mode + Live Network Activity Monitor (↓ / ↑) on dark taskbar
+$r9 = Run-DemoScenario "09_demo_ultra_net_dark" @("--demo", "--demo-set", "0", "--demo-ultra", "--demo-net")
+if (-not $r9.Status -or -not $r9.Status.embedded -or -not $r9.Status.renderOk -or $r9.Status.displayStyle -ne "ultra" -or -not $r9.Status.showNetwork -or $r9.Status.tileCount -ne 4) {
+    throw "Scenario 09 failed assertion: embedded=$($r9.Status.embedded) style=$($r9.Status.displayStyle) net=$($r9.Status.showNetwork) tiles=$($r9.Status.tileCount)"
+}
+
+# Scenario 10: Ultra-Compact 0%..100% 10%-step showcase (all 11 icons live on Win10 taskbar)
+$r10 = Run-DemoScenario "10_demo_ultra_10pct_grid" @("--demo", "--demo-set", "3", "--demo-ultra")
+if (-not $r10.Status -or -not $r10.Status.embedded -or -not $r10.Status.renderOk -or $r10.Status.deviceCount -ne 11) {
+    throw "Scenario 10 failed assertion: embedded=$($r10.Status.embedded) deviceCount=$($r10.Status.deviceCount)"
+}
+
+# Scenario 11: Full mode + Network Monitor with hover tooltip over the Network tile (index 0)
+$r11 = Run-DemoScenario "11_demo_net_tooltip" @("--demo", "--demo-set", "0", "--demo-net", "--demo-hover", "0")
+if (-not $r11.Status -or -not $r11.Status.showNetwork -or -not $r11.Status.tooltipVisible) {
+    throw "Scenario 11 failed assertion: showNetwork=$($r11.Status.showNetwork) tooltipVisible=$($r11.Status.tooltipVisible)"
+}
+
+# Scenario 12: Interactive Settings Panel open above dark taskbar (Ultra-Compact + Network active)
+$r12 = Run-DemoScenario "12_demo_settings_dark" @("--demo", "--demo-set", "0", "--demo-ultra", "--demo-net", "--demo-settings") 560 620
+if (-not $r12.Status -or -not $r12.Status.settingsVisible) {
+    throw "Scenario 12 failed assertion: settingsVisible=$($r12.Status.settingsVisible)"
+}
+
+# Scenario 6 & 13: Light Windows 10 taskbar theme preview (bar, tooltip, and Light Settings Panel)
 $persKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 if (!(Test-Path $persKey)) { New-Item -Path $persKey -Force | Out-Null }
 $origLight = $null
@@ -346,6 +374,11 @@ try {
     $r6b = Run-DemoScenario "06b_demo_light_tooltip" @("--demo", "--demo-set", "0", "--demo-light", "--demo-hover", "1")
     if (-not $r6b.Status -or -not $r6b.Status.tooltipVisible) {
         throw "Scenario 06b failed assertion: tooltipVisible=$($r6b.Status.tooltipVisible)"
+    }
+
+    $r13 = Run-DemoScenario "13_demo_settings_light" @("--demo", "--demo-set", "0", "--demo-ultra", "--demo-net", "--demo-light", "--demo-settings") 560 620
+    if (-not $r13.Status -or -not $r13.Status.settingsVisible -or -not $r13.Status.lightTheme) {
+        throw "Scenario 13 failed assertion: settingsVisible=$($r13.Status.settingsVisible) lightTheme=$($r13.Status.lightTheme)"
     }
 } finally {
     # Restore original taskbar theme

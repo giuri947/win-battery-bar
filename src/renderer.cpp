@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "network_monitor.h"
 
 #include <windows.h>
 #include <objidl.h>
@@ -54,7 +55,484 @@ void AddRightRoundedRect(Gdiplus::GraphicsPath& path, float x, float y, float w,
     path.CloseFigure();
 }
 
-void DrawDeviceIcon(Gdiplus::Graphics& g, DeviceKind kind, bool charging, float x, float y, float s, Gdiplus::Color color) {
+bool IsLowBattery(const BatteryDevice& dev, int threshold) {
+    return dev.connected && dev.percent >= 0 && dev.percent <= threshold;
+}
+
+void GetFillColors(const BatteryDevice& dev, int lowThreshold, Gdiplus::Color& topCol, Gdiplus::Color& botCol) {
+    using namespace Gdiplus;
+    if (!dev.connected || dev.percent < 0) {
+        topCol = Color(190, 96, 103, 115);
+        botCol = Color(190, 70, 76, 86);
+        return;
+    }
+    if (dev.percent <= lowThreshold) {
+        // Vivid alert crimson red (clear low-battery visual without popups)
+        topCol = Color(252, 236, 54, 58);
+        botCol = Color(252, 182, 26, 30);
+    } else if (dev.percent <= std::max(40, lowThreshold + 15)) {
+        // Warm amber/gold (high white-text legibility)
+        topCol = Color(248, 224, 148, 16);
+        botCol = Color(248, 178, 108, 6);
+    } else if (dev.charging) {
+        // Vibrant charging emerald
+        topCol = Color(248, 34, 186, 120);
+        botCol = Color(248, 20, 136, 86);
+    } else {
+        // Classic BatteryBar rich green
+        topCol = Color(248, 36, 170, 94);
+        botCol = Color(248, 22, 128, 68);
+    }
+}
+
+void DrawBatteryCapsuleTile(
+    Gdiplus::Graphics& g,
+    const BatteryDevice& dev,
+    const RECT& tileRect,
+    const RenderParams& params,
+    bool hovered)
+{
+    using namespace Gdiplus;
+
+    UINT dpi = params.dpi;
+    bool lightTaskbar = params.lightTaskbar;
+    bool isLow = IsLowBattery(dev, params.lowBatteryThreshold);
+
+    float nubW = Sc(3.0f, dpi);
+    float x = static_cast<float>(tileRect.left);
+    float y = static_cast<float>(tileRect.top);
+    float bodyW = static_cast<float>(tileRect.right - tileRect.left) - nubW;
+    float h = static_cast<float>(tileRect.bottom - tileRect.top);
+    float radius = Sc(3.5f, dpi);
+
+    // Subtle hover outer aura
+    if (hovered) {
+        GraphicsPath glow;
+        AddRoundedRect(glow, x - Sc(1.5f, dpi), y - Sc(1.5f, dpi),
+            bodyW + Sc(3.0f, dpi), h + Sc(3.0f, dpi), radius + Sc(1.5f, dpi));
+        SolidBrush glowBrush(lightTaskbar ? Color(36, 0, 0, 0) : Color(36, 255, 255, 255));
+        g.FillPath(&glowBrush, &glow);
+    }
+
+    // Battery body interior: dark crimson tint when low so even 0-10% reads clearly as red alert
+    GraphicsPath bodyPath;
+    AddRoundedRect(bodyPath, x, y, bodyW, h, radius);
+
+    Color bgTop, bgBot;
+    if (isLow) {
+        bgTop = lightTaskbar ? Color(244, 78, 22, 26) : Color(238, 66, 16, 20);
+        bgBot = lightTaskbar ? Color(244, 54, 14, 18) : Color(238, 44, 10, 14);
+    } else {
+        bgTop = lightTaskbar ? Color(238, 38, 42, 50) : Color(225, 24, 27, 34);
+        bgBot = lightTaskbar ? Color(238, 26, 30, 37) : Color(225, 16, 18, 23);
+    }
+    LinearGradientBrush bgBrush(RectF(x, y, bodyW, h), bgTop, bgBot, LinearGradientModeVertical);
+    g.FillPath(&bgBrush, &bodyPath);
+
+    // Proportional battery fill inside the capsule (inset by 2px)
+    float inset = std::max(1.5f, Sc(2.0f, dpi));
+    float innerX = x + inset;
+    float innerY = y + inset;
+    float innerW = std::max(1.0f, bodyW - inset * 2.0f);
+    float innerH = std::max(1.0f, h - inset * 2.0f);
+    float innerR = std::max(1.5f, radius - inset * 0.65f);
+
+    int pct = std::clamp(dev.percent, 0, 100);
+    if (dev.percent >= 0 && pct > 0) {
+        float fillW = innerW * (static_cast<float>(pct) / 100.0f);
+        fillW = std::max(Sc(3.5f, dpi), std::min(innerW, fillW));
+
+        Color topCol, botCol;
+        GetFillColors(dev, params.lowBatteryThreshold, topCol, botCol);
+
+        // Clip fill cleanly to rounded inner shell so low percentages keep crisp rounded left corners
+        GraphicsState st = g.Save();
+        GraphicsPath innerClip;
+        AddRoundedRect(innerClip, innerX, innerY, innerW, innerH, innerR);
+        g.SetClip(&innerClip);
+
+        LinearGradientBrush fillBrush(RectF(innerX, innerY, fillW, innerH), topCol, botCol, LinearGradientModeVertical);
+        g.FillRectangle(&fillBrush, innerX, innerY, fillW, innerH);
+
+        // Subtle top glossy highlight line (signature BatteryBar polish)
+        SolidBrush sheen(Color(44, 255, 255, 255));
+        g.FillRectangle(&sheen, innerX, innerY, fillW, std::max(1.0f, Sc(1.2f, dpi)));
+
+        // Subtle vertical end-cap separator when partially filled
+        if (pct < 99) {
+            SolidBrush edge(Color(40, 255, 255, 255));
+            g.FillRectangle(&edge, innerX + fillW - 1.0f, innerY, 1.0f, innerH);
+        }
+
+        g.Restore(st);
+    }
+
+    // Subtle refresh flash highlight
+    if (params.refreshFlash) {
+        SolidBrush flashBrush(Color(48, 255, 255, 255));
+        g.FillPath(&flashBrush, &bodyPath);
+    }
+
+    // Outer battery frame border
+    Color borderCol;
+    if (hovered) {
+        borderCol = lightTaskbar ? Color(230, 18, 20, 26) : Color(235, 255, 255, 255);
+    } else if (isLow) {
+        borderCol = lightTaskbar ? Color(240, 214, 38, 42) : Color(238, 255, 86, 90);
+    } else {
+        borderCol = lightTaskbar ? Color(185, 36, 40, 48) : Color(120, 255, 255, 255);
+    }
+
+    float borderW = std::max(1.0f, Sc(isLow ? 1.25f : 1.1f, dpi));
+    Pen borderPen(borderCol, borderW);
+    g.DrawPath(&borderPen, &bodyPath);
+
+    // Positive battery terminal nub on right edge
+    float nubH = std::max(Sc(8.0f, dpi), h * 0.42f);
+    float nubY = y + (h - nubH) * 0.5f;
+    GraphicsPath nubPath;
+    AddRightRoundedRect(nubPath, x + bodyW + Sc(0.5f, dpi), nubY, nubW - Sc(0.5f, dpi), nubH, Sc(1.3f, dpi));
+    Color nubCol = borderCol;
+    if (dev.connected && pct >= 98) {
+        Color topCol, botCol;
+        GetFillColors(dev, params.lowBatteryThreshold, topCol, botCol);
+        nubCol = topCol;
+    }
+    SolidBrush nubBrush(nubCol);
+    g.FillPath(&nubBrush, &nubPath);
+
+    // Crisp vector device icon on the left side of the capsule
+    float iconSize = std::min(Sc(13.0f, dpi), h * 0.56f);
+    float iconX = x + Sc(5.0f, dpi);
+    float iconY = y + (h - iconSize) * 0.5f;
+    Color fgCol = dev.connected ? Color(255, 255, 255, 255) : Color(185, 210, 215, 224);
+    Renderer::DrawDeviceIcon(g, dev.kind, dev.charging, iconX, iconY, iconSize, fgCol);
+
+    // Crisp percentage text on the right side of the capsule
+    std::wstring label = (dev.percent >= 0) ? (std::to_wstring(pct) + L"%") : L"--";
+
+    float fontSizePx = std::min(Sc(11.5f, dpi), h * 0.50f);
+    FontFamily family(L"Segoe UI");
+    Font font(&family, fontSizePx, FontStyleBold, UnitPixel);
+
+    StringFormat fmt;
+    fmt.SetAlignment(StringAlignmentCenter);
+    fmt.SetLineAlignment(StringAlignmentCenter);
+    fmt.SetFormatFlags(StringFormatFlagsNoWrap);
+
+    float textX = iconX + iconSize + Sc(1.5f, dpi);
+    float textW = std::max(Sc(18.0f, dpi), (x + bodyW - Sc(3.0f, dpi)) - textX);
+    RectF textRect(textX, y + Sc(0.5f, dpi), textW, h);
+    RectF shadowRect(textX, y + Sc(1.4f, dpi), textW, h);
+
+    SolidBrush textShadow(Color(165, 0, 0, 0));
+    SolidBrush textFg(fgCol);
+    g.DrawString(label.c_str(), -1, &font, shadowRect, &fmt, &textShadow);
+    g.DrawString(label.c_str(), -1, &font, textRect, &fmt, &textFg);
+}
+
+// Very compact 28x26px tile: crisp vector device icon on top + 10%-step (0..100%) mini battery bar underneath
+void DrawUltraCompactBatteryTile(
+    Gdiplus::Graphics& g,
+    const BatteryDevice& dev,
+    const RECT& tileRect,
+    const RenderParams& params,
+    bool hovered)
+{
+    using namespace Gdiplus;
+
+    UINT dpi = params.dpi;
+    bool lightTaskbar = params.lightTaskbar;
+    bool isLow = IsLowBattery(dev, params.lowBatteryThreshold);
+
+    float x = static_cast<float>(tileRect.left);
+    float y = static_cast<float>(tileRect.top);
+    float w = static_cast<float>(tileRect.right - tileRect.left);
+    float h = static_cast<float>(tileRect.bottom - tileRect.top);
+    float radius = Sc(4.0f, dpi);
+
+    if (hovered) {
+        GraphicsPath glow;
+        AddRoundedRect(glow, x - Sc(1.2f, dpi), y - Sc(1.2f, dpi),
+            w + Sc(2.4f, dpi), h + Sc(2.4f, dpi), radius + Sc(1.2f, dpi));
+        SolidBrush glowBrush(lightTaskbar ? Color(36, 0, 0, 0) : Color(38, 255, 255, 255));
+        g.FillPath(&glowBrush, &glow);
+    }
+
+    // Tile backdrop (vivid dark-crimson alert tint when battery <= lowBatteryThreshold)
+    GraphicsPath cardPath;
+    AddRoundedRect(cardPath, x, y, w, h, radius);
+
+    Color bgTop, bgBot;
+    if (isLow) {
+        bgTop = lightTaskbar ? Color(246, 86, 20, 24) : Color(242, 78, 16, 20);
+        bgBot = lightTaskbar ? Color(246, 58, 12, 16) : Color(242, 52, 10, 14);
+    } else {
+        bgTop = lightTaskbar ? Color(238, 38, 42, 50) : Color(225, 24, 27, 34);
+        bgBot = lightTaskbar ? Color(238, 26, 30, 37) : Color(225, 16, 18, 23);
+    }
+    LinearGradientBrush bgBrush(RectF(x, y, w, h), bgTop, bgBot, LinearGradientModeVertical);
+    g.FillPath(&bgBrush, &cardPath);
+
+    if (params.refreshFlash) {
+        SolidBrush flashBrush(Color(48, 255, 255, 255));
+        g.FillPath(&flashBrush, &cardPath);
+    }
+
+    // Outer frame border
+    Color borderCol;
+    if (hovered) {
+        borderCol = lightTaskbar ? Color(230, 18, 20, 26) : Color(235, 255, 255, 255);
+    } else if (isLow) {
+        borderCol = lightTaskbar ? Color(242, 224, 38, 42) : Color(245, 255, 82, 86);
+    } else {
+        borderCol = lightTaskbar ? Color(180, 36, 40, 48) : Color(110, 255, 255, 255);
+    }
+    Pen borderPen(borderCol, std::max(1.0f, Sc(isLow ? 1.25f : 1.0f, dpi)));
+    g.DrawPath(&borderPen, &cardPath);
+
+    // Top: crisp vector device icon (tinted bright coral-red on low battery for instant glanceability)
+    float iconSize = std::min(Sc(13.0f, dpi), h * 0.50f);
+    float iconX = x + (w - iconSize) * 0.5f;
+    float iconY = y + Sc(2.0f, dpi);
+    Color iconCol;
+    if (!dev.connected || dev.percent < 0) {
+        iconCol = Color(185, 188, 196, 208);
+    } else if (isLow) {
+        iconCol = Color(255, 255, 128, 130);
+    } else {
+        iconCol = Color(255, 250, 252, 255);
+    }
+    Renderer::DrawDeviceIcon(g, dev.kind, dev.charging, iconX, iconY, iconSize, iconCol);
+
+    // Bottom: ultra-crisp 10%-step (0..100%) mini battery bar + micro terminal nub
+    float nubW = Sc(1.6f, dpi);
+    float barBodyW = std::max(Sc(16.0f, dpi), w - Sc(4.4f, dpi) - nubW);
+    float barH = Sc(6.0f, dpi);
+    float barX = x + (w - (barBodyW + nubW)) * 0.5f;
+    float barY = y + h - barH - Sc(2.3f, dpi);
+
+    // Mini battery outer track
+    GraphicsPath barShell;
+    AddRoundedRect(barShell, barX, barY, barBodyW, barH, Sc(1.5f, dpi));
+    SolidBrush trackBg(isLow ? Color(220, 36, 8, 10) : Color(210, 10, 12, 16));
+    g.FillPath(&trackBg, &barShell);
+
+    // Quantize 0..100% into exact 10% steps (0, 10, 20, ..., 100)
+    int pct = std::clamp(dev.percent, 0, 100);
+    int steps10 = (dev.percent <= 0) ? 0 : std::clamp((pct + 9) / 10, 1, 10);
+
+    float barInset = std::max(0.8f, Sc(1.0f, dpi));
+    float innerX = barX + barInset;
+    float innerY = barY + barInset;
+    float innerW = std::max(1.0f, barBodyW - barInset * 2.0f);
+    float innerH = std::max(1.5f, barH - barInset * 2.0f);
+
+    if (dev.percent >= 0 && steps10 > 0) {
+        float fillW = innerW * (static_cast<float>(steps10) / 10.0f);
+        Color topCol, botCol;
+        GetFillColors(dev, params.lowBatteryThreshold, topCol, botCol);
+
+        GraphicsState st = g.Save();
+        GraphicsPath innerClip;
+        AddRoundedRect(innerClip, innerX, innerY, innerW, innerH, Sc(0.8f, dpi));
+        g.SetClip(&innerClip);
+
+        LinearGradientBrush fillBrush(RectF(innerX, innerY, fillW, innerH), topCol, botCol, LinearGradientModeVertical);
+        g.FillRectangle(&fillBrush, innerX, innerY, fillW, innerH);
+        g.Restore(st);
+    }
+
+    // Mini battery shell border
+    Color barBorderCol = isLow ? Color(235, 255, 104, 108) : Color(145, 215, 222, 234);
+    Pen barPen(barBorderCol, std::max(0.85f, Sc(0.9f, dpi)));
+    g.DrawPath(&barPen, &barShell);
+
+    // Micro positive battery nub on right of mini bar
+    float nubH = std::max(Sc(2.6f, dpi), barH * 0.54f);
+    float nubY = barY + (barH - nubH) * 0.5f;
+    Color nubCol = barBorderCol;
+    if (dev.connected && steps10 >= 10) {
+        Color topCol, botCol;
+        GetFillColors(dev, params.lowBatteryThreshold, topCol, botCol);
+        nubCol = topCol;
+    }
+    SolidBrush nubBrush(nubCol);
+    g.FillRectangle(&nubBrush, barX + barBodyW + Sc(0.4f, dpi), nubY, nubW - Sc(0.3f, dpi), nubH);
+}
+
+// Live Network Activity (Download ↓ / Upload ↑) tile
+void DrawNetworkTile(
+    Gdiplus::Graphics& g,
+    const RECT& tileRect,
+    const RenderParams& params,
+    bool hovered)
+{
+    using namespace Gdiplus;
+
+    UINT dpi = params.dpi;
+    bool lightTaskbar = params.lightTaskbar;
+    bool ultraShort = (params.style == DisplayStyle::UltraCompact);
+
+    float x = static_cast<float>(tileRect.left);
+    float y = static_cast<float>(tileRect.top);
+    float w = static_cast<float>(tileRect.right - tileRect.left);
+    float h = static_cast<float>(tileRect.bottom - tileRect.top);
+    float radius = Sc(3.8f, dpi);
+
+    if (hovered) {
+        GraphicsPath glow;
+        AddRoundedRect(glow, x - Sc(1.3f, dpi), y - Sc(1.3f, dpi),
+            w + Sc(2.6f, dpi), h + Sc(2.6f, dpi), radius + Sc(1.3f, dpi));
+        SolidBrush glowBrush(lightTaskbar ? Color(36, 0, 0, 0) : Color(36, 255, 255, 255));
+        g.FillPath(&glowBrush, &glow);
+    }
+
+    GraphicsPath bodyPath;
+    AddRoundedRect(bodyPath, x, y, w, h, radius);
+    Color bgTop = lightTaskbar ? Color(238, 38, 42, 50) : Color(225, 24, 27, 34);
+    Color bgBot = lightTaskbar ? Color(238, 26, 30, 37) : Color(225, 16, 18, 23);
+    LinearGradientBrush bgBrush(RectF(x, y, w, h), bgTop, bgBot, LinearGradientModeVertical);
+    g.FillPath(&bgBrush, &bodyPath);
+
+    if (params.refreshFlash) {
+        SolidBrush flashBrush(Color(44, 255, 255, 255));
+        g.FillPath(&flashBrush, &bodyPath);
+    }
+
+    Color borderCol = hovered
+        ? (lightTaskbar ? Color(230, 18, 20, 26) : Color(235, 255, 255, 255))
+        : (lightTaskbar ? Color(185, 36, 40, 48) : Color(115, 255, 255, 255));
+    Pen borderPen(borderCol, std::max(1.0f, Sc(1.05f, dpi)));
+    g.DrawPath(&borderPen, &bodyPath);
+
+    float halfH = h * 0.5f;
+    float arrowX = x + Sc(5.0f, dpi);
+    float arrowW = Sc(5.0f, dpi);
+    float arrowH = Sc(5.2f, dpi);
+
+    // Top row: crisp vector Download arrow (↓) in sky-cyan
+    float downCy = y + halfH * 0.54f;
+    Color downCol(255, 86, 204, 255);
+    {
+        float ax = arrowX;
+        float topY = downCy - arrowH * 0.5f;
+        float midY = downCy + arrowH * 0.08f;
+        float botY = downCy + arrowH * 0.52f;
+        Pen stemPen(downCol, std::max(1.2f, Sc(1.3f, dpi)));
+        stemPen.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
+        g.DrawLine(&stemPen, ax + arrowW * 0.5f, topY, ax + arrowW * 0.5f, midY);
+        PointF head[3] = {
+            { ax, midY - Sc(0.2f, dpi) },
+            { ax + arrowW, midY - Sc(0.2f, dpi) },
+            { ax + arrowW * 0.5f, botY }
+        };
+        SolidBrush headBrush(downCol);
+        g.FillPolygon(&headBrush, head, 3);
+    }
+
+    // Bottom row: crisp vector Upload arrow (↑) in mint-emerald
+    float upCy = y + halfH + halfH * 0.46f;
+    Color upCol(255, 84, 224, 146);
+    {
+        float ax = arrowX;
+        float topY = upCy - arrowH * 0.52f;
+        float midY = upCy - arrowH * 0.08f;
+        float botY = upCy + arrowH * 0.50f;
+        Pen stemPen(upCol, std::max(1.2f, Sc(1.3f, dpi)));
+        stemPen.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
+        g.DrawLine(&stemPen, ax + arrowW * 0.5f, midY, ax + arrowW * 0.5f, botY);
+        PointF head[3] = {
+            { ax, midY + Sc(0.2f, dpi) },
+            { ax + arrowW, midY + Sc(0.2f, dpi) },
+            { ax + arrowW * 0.5f, topY }
+        };
+        SolidBrush headBrush(upCol);
+        g.FillPolygon(&headBrush, head, 3);
+    }
+
+    std::wstring downStr = NetworkMonitor::FormatSpeed(params.netStats.downBytesPerSec, params.netUnits, ultraShort);
+    std::wstring upStr   = NetworkMonitor::FormatSpeed(params.netStats.upBytesPerSec, params.netUnits, ultraShort);
+
+    float fontSize = std::min(Sc(ultraShort ? 9.6f : 9.8f, dpi), halfH * 0.86f);
+    FontFamily fam(L"Segoe UI");
+    Font font(&fam, fontSize, FontStyleBold, UnitPixel);
+
+    StringFormat fmt;
+    fmt.SetAlignment(StringAlignmentFar);
+    fmt.SetLineAlignment(StringAlignmentCenter);
+    fmt.SetFormatFlags(StringFormatFlagsNoWrap);
+
+    float textX = arrowX + arrowW + Sc(1.5f, dpi);
+    float textW = std::max(Sc(24.0f, dpi), (x + w - Sc(4.0f, dpi)) - textX);
+    RectF downRect(textX, y + Sc(0.5f, dpi), textW, halfH);
+    RectF upRect(textX, y + halfH - Sc(0.5f, dpi), textW, halfH);
+
+    SolidBrush downText(Color(255, 238, 248, 255));
+    SolidBrush upText(Color(255, 224, 248, 232));
+    g.DrawString(downStr.c_str(), -1, &font, downRect, &fmt, &downText);
+    g.DrawString(upStr.c_str(), -1, &font, upRect, &fmt, &upText);
+}
+
+void DrawAllTiles(
+    Gdiplus::Graphics& g,
+    const std::vector<BatteryDevice>& devices,
+    const WidgetLayout& layout,
+    const RenderParams& params)
+{
+    for (size_t i = 0; i < layout.tiles.size(); ++i) {
+        const auto& box = layout.tiles[i];
+        bool isHovered = (params.hoveredTileIndex == static_cast<int>(i));
+
+        if (box.isNetworkTile) {
+            DrawNetworkTile(g, box.rect, params, isHovered);
+            continue;
+        }
+
+        BatteryDevice placeholder;
+        placeholder.kind = DeviceKind::Bluetooth;
+        placeholder.percent = -1;
+        placeholder.connected = false;
+
+        const BatteryDevice& dev = (box.deviceIndex >= 0 && static_cast<size_t>(box.deviceIndex) < devices.size())
+            ? devices[static_cast<size_t>(box.deviceIndex)]
+            : placeholder;
+
+        if (params.style == DisplayStyle::UltraCompact) {
+            DrawUltraCompactBatteryTile(g, dev, box.rect, params, isHovered);
+        } else {
+            DrawBatteryCapsuleTile(g, dev, box.rect, params, isHovered);
+        }
+    }
+}
+
+} // namespace
+
+namespace Renderer {
+
+void InitGdiPlus() {
+    if (g_gdiplusToken == 0) {
+        Gdiplus::GdiplusStartupInput input;
+        Gdiplus::GdiplusStartup(&g_gdiplusToken, &input, nullptr);
+    }
+}
+
+void ShutdownGdiPlus() {
+    if (g_gdiplusToken != 0) {
+        Gdiplus::GdiplusShutdown(g_gdiplusToken);
+        g_gdiplusToken = 0;
+    }
+}
+
+void DrawDeviceIcon(
+    Gdiplus::Graphics& g,
+    DeviceKind kind,
+    bool charging,
+    float x,
+    float y,
+    float s,
+    const Gdiplus::Color& color)
+{
     using namespace Gdiplus;
 
     float stroke = std::max(1.15f, s * 0.105f);
@@ -188,245 +666,114 @@ void DrawDeviceIcon(Gdiplus::Graphics& g, DeviceKind kind, bool charging, float 
     }
 }
 
-void GetFillColors(const BatteryDevice& dev, Gdiplus::Color& topCol, Gdiplus::Color& botCol) {
-    using namespace Gdiplus;
-    if (!dev.connected || dev.percent < 0) {
-        topCol = Color(190, 96, 103, 115);
-        botCol = Color(190, 70, 76, 86);
-        return;
-    }
-    if (dev.percent <= 20) {
-        // Alert red
-        topCol = Color(248, 224, 58, 62);
-        botCol = Color(248, 174, 30, 34);
-    } else if (dev.percent <= 40) {
-        // Warm amber/gold (high white-text legibility)
-        topCol = Color(248, 222, 146, 14);
-        botCol = Color(248, 176, 106, 4);
-    } else if (dev.charging) {
-        // Vibrant charging emerald
-        topCol = Color(248, 34, 182, 118);
-        botCol = Color(248, 20, 134, 84);
-    } else {
-        // Classic BatteryBar rich green
-        topCol = Color(248, 36, 168, 92);
-        botCol = Color(248, 22, 126, 66);
-    }
-}
-
-void DrawBatteryTile(
-    Gdiplus::Graphics& g,
-    const BatteryDevice& dev,
-    const RECT& tileRect,
-    UINT dpi,
-    bool lightTaskbar,
-    bool hovered,
-    bool refreshFlash)
-{
-    using namespace Gdiplus;
-
-    float nubW = Sc(3.0f, dpi);
-    float x = static_cast<float>(tileRect.left);
-    float y = static_cast<float>(tileRect.top);
-    float bodyW = static_cast<float>(tileRect.right - tileRect.left) - nubW;
-    float h = static_cast<float>(tileRect.bottom - tileRect.top);
-    float radius = Sc(3.5f, dpi);
-
-    // Subtle hover outer aura
-    if (hovered) {
-        GraphicsPath glow;
-        AddRoundedRect(glow, x - Sc(1.5f, dpi), y - Sc(1.5f, dpi),
-            bodyW + Sc(3.0f, dpi), h + Sc(3.0f, dpi), radius + Sc(1.5f, dpi));
-        SolidBrush glowBrush(lightTaskbar ? Color(36, 0, 0, 0) : Color(36, 255, 255, 255));
-        g.FillPath(&glowBrush, &glow);
-    }
-
-    // Battery body dark interior (ensures crisp BatteryBar look on both dark and light Win10 taskbars)
-    GraphicsPath bodyPath;
-    AddRoundedRect(bodyPath, x, y, bodyW, h, radius);
-
-    Color bgTop = lightTaskbar ? Color(238, 38, 42, 50) : Color(225, 24, 27, 34);
-    Color bgBot = lightTaskbar ? Color(238, 26, 30, 37) : Color(225, 16, 18, 23);
-    LinearGradientBrush bgBrush(RectF(x, y, bodyW, h), bgTop, bgBot, LinearGradientModeVertical);
-    g.FillPath(&bgBrush, &bodyPath);
-
-    // Proportional battery fill inside the capsule (inset by 2px)
-    float inset = std::max(1.5f, Sc(2.0f, dpi));
-    float innerX = x + inset;
-    float innerY = y + inset;
-    float innerW = std::max(1.0f, bodyW - inset * 2.0f);
-    float innerH = std::max(1.0f, h - inset * 2.0f);
-    float innerR = std::max(1.5f, radius - inset * 0.65f);
-
-    int pct = std::clamp(dev.percent, 0, 100);
-    if (dev.percent >= 0 && pct > 0) {
-        float fillW = innerW * (static_cast<float>(pct) / 100.0f);
-        fillW = std::max(Sc(3.5f, dpi), std::min(innerW, fillW));
-
-        Color topCol, botCol;
-        GetFillColors(dev, topCol, botCol);
-
-        // Clip fill cleanly to rounded inner shell so low percentages keep crisp rounded left corners
-        GraphicsState st = g.Save();
-        GraphicsPath innerClip;
-        AddRoundedRect(innerClip, innerX, innerY, innerW, innerH, innerR);
-        g.SetClip(&innerClip);
-
-        LinearGradientBrush fillBrush(RectF(innerX, innerY, fillW, innerH), topCol, botCol, LinearGradientModeVertical);
-        g.FillRectangle(&fillBrush, innerX, innerY, fillW, innerH);
-
-        // Subtle top glossy highlight line (signature BatteryBar polish)
-        SolidBrush sheen(Color(44, 255, 255, 255));
-        g.FillRectangle(&sheen, innerX, innerY, fillW, std::max(1.0f, Sc(1.2f, dpi)));
-
-        // Subtle vertical end-cap separator when partially filled
-        if (pct < 99) {
-            SolidBrush edge(Color(40, 255, 255, 255));
-            g.FillRectangle(&edge, innerX + fillW - 1.0f, innerY, 1.0f, innerH);
-        }
-
-        g.Restore(st);
-    }
-
-    // Subtle refresh flash highlight
-    if (refreshFlash) {
-        SolidBrush flashBrush(Color(48, 255, 255, 255));
-        g.FillPath(&flashBrush, &bodyPath);
-    }
-
-    // Outer battery frame border
-    bool isLow = dev.connected && dev.percent >= 0 && dev.percent <= 20;
-    Color borderCol;
-    if (hovered) {
-        borderCol = lightTaskbar ? Color(230, 18, 20, 26) : Color(235, 255, 255, 255);
-    } else if (isLow) {
-        borderCol = lightTaskbar ? Color(230, 204, 44, 48) : Color(210, 255, 115, 115);
-    } else {
-        borderCol = lightTaskbar ? Color(185, 36, 40, 48) : Color(120, 255, 255, 255);
-    }
-
-    float borderW = std::max(1.0f, Sc(1.1f, dpi));
-    Pen borderPen(borderCol, borderW);
-    g.DrawPath(&borderPen, &bodyPath);
-
-    // Positive battery terminal nub on right edge
-    float nubH = std::max(Sc(8.0f, dpi), h * 0.42f);
-    float nubY = y + (h - nubH) * 0.5f;
-    GraphicsPath nubPath;
-    AddRightRoundedRect(nubPath, x + bodyW + Sc(0.5f, dpi), nubY, nubW - Sc(0.5f, dpi), nubH, Sc(1.3f, dpi));
-    Color nubCol = borderCol;
-    if (dev.connected && pct >= 98) {
-        Color topCol, botCol;
-        GetFillColors(dev, topCol, botCol);
-        nubCol = topCol;
-    }
-    SolidBrush nubBrush(nubCol);
-    g.FillPath(&nubBrush, &nubPath);
-
-    // Crisp vector device icon on the left side of the capsule
-    float iconSize = std::min(Sc(13.0f, dpi), h * 0.56f);
-    float iconX = x + Sc(5.0f, dpi);
-    float iconY = y + (h - iconSize) * 0.5f;
-    Color fgCol = dev.connected ? Color(255, 255, 255, 255) : Color(185, 210, 215, 224);
-    DrawDeviceIcon(g, dev.kind, dev.charging, iconX, iconY, iconSize, fgCol);
-
-    // Crisp percentage text on the right side of the capsule
-    std::wstring label = (dev.percent >= 0) ? (std::to_wstring(pct) + L"%") : L"--";
-
-    float fontSizePx = std::min(Sc(11.5f, dpi), h * 0.50f);
-    FontFamily family(L"Segoe UI");
-    Font font(&family, fontSizePx, FontStyleBold, UnitPixel);
-
-    StringFormat fmt;
-    fmt.SetAlignment(StringAlignmentCenter);
-    fmt.SetLineAlignment(StringAlignmentCenter);
-    fmt.SetFormatFlags(StringFormatFlagsNoWrap);
-
-    float textX = iconX + iconSize + Sc(1.5f, dpi);
-    float textW = std::max(Sc(18.0f, dpi), (x + bodyW - Sc(3.0f, dpi)) - textX);
-    RectF textRect(textX, y + Sc(0.5f, dpi), textW, h);
-    RectF shadowRect(textX, y + Sc(1.4f, dpi), textW, h);
-
-    SolidBrush textShadow(Color(165, 0, 0, 0));
-    SolidBrush textFg(fgCol);
-    g.DrawString(label.c_str(), -1, &font, shadowRect, &fmt, &textShadow);
-    g.DrawString(label.c_str(), -1, &font, textRect, &fmt, &textFg);
-}
-
-} // namespace
-
-namespace Renderer {
-
-void InitGdiPlus() {
-    if (g_gdiplusToken == 0) {
-        Gdiplus::GdiplusStartupInput input;
-        Gdiplus::GdiplusStartup(&g_gdiplusToken, &input, nullptr);
-    }
-}
-
-void ShutdownGdiPlus() {
-    if (g_gdiplusToken != 0) {
-        Gdiplus::GdiplusShutdown(g_gdiplusToken);
-        g_gdiplusToken = 0;
-    }
-}
-
 WidgetLayout ComputeLayout(
     const std::vector<BatteryDevice>& devices,
     UINT dpi,
     int taskbarThickness,
     bool horizontal,
-    bool compactMode)
+    DisplayStyle style,
+    bool showNetwork)
 {
     WidgetLayout layout;
-    int count = static_cast<int>(devices.size());
-    bool emptyPlaceholder = (count == 0);
-    if (emptyPlaceholder) count = 1;
+    int devCount = static_cast<int>(devices.size());
+    bool emptyPlaceholder = (devCount == 0 && !showNetwork);
+    int batteryTileCount = emptyPlaceholder ? 1 : devCount;
 
-    float baseTileW = compactMode ? 64.0f : 72.0f;
-    float baseTileH = compactMode ? 22.0f : 24.0f;
-    float gap = compactMode ? 5.0f : 6.0f;
+    float baseTileW = 72.0f;
+    float baseTileH = 24.0f;
+    float gap = 6.0f;
+    float netW = 74.0f;
+
     float padX = 4.0f;
     float padY = 2.0f;
 
+    if (style == DisplayStyle::Compact) {
+        baseTileW = 64.0f;
+        baseTileH = 22.0f;
+        gap = 5.0f;
+        netW = 68.0f;
+    } else if (style == DisplayStyle::UltraCompact) {
+        baseTileW = 25.0f;
+        baseTileH = 26.0f;
+        gap = 3.0f;
+        padX = 3.0f;
+        netW = 58.0f;
+    }
+
     int tileW = ScI(baseTileW, dpi);
-    int maxTileH = std::max(ScI(18.0f, dpi), taskbarThickness - ScI(6.0f, dpi));
+    int maxTileH = std::max(ScI(18.0f, dpi), taskbarThickness - ScI(4.0f, dpi));
     int tileH = std::min(ScI(baseTileH, dpi), maxTileH);
     int gapPx = ScI(gap, dpi);
     int padXPx = ScI(padX, dpi);
     int padYPx = ScI(padY, dpi);
+    int netWPx = ScI(netW, dpi);
 
-    if (emptyPlaceholder) {
+    if (emptyPlaceholder && style != DisplayStyle::UltraCompact) {
         tileW = ScI(58.0f, dpi);
     }
 
     if (horizontal) {
-        layout.width = padXPx * 2 + count * tileW + (count - 1) * gapPx;
         layout.height = std::min(taskbarThickness, tileH + padYPx * 2);
         int topY = (layout.height - tileH) / 2;
+        int curX = padXPx;
 
-        for (int i = 0; i < count; ++i) {
-            int tx = padXPx + i * (tileW + gapPx);
-            TileHitBox box;
-            box.rect = { tx, topY, tx + tileW, topY + tileH };
-            box.deviceIndex = emptyPlaceholder ? -1 : i;
-            layout.tiles.push_back(box);
+        if (showNetwork) {
+            TileHitBox netBox;
+            netBox.rect = { curX, topY, curX + netWPx, topY + tileH };
+            netBox.deviceIndex = -1;
+            netBox.isNetworkTile = true;
+            layout.tiles.push_back(netBox);
+            curX += netWPx;
+            if (batteryTileCount > 0) {
+                curX += gapPx;
+            }
         }
+
+        for (int i = 0; i < batteryTileCount; ++i) {
+            TileHitBox box;
+            box.rect = { curX, topY, curX + tileW, topY + tileH };
+            box.deviceIndex = emptyPlaceholder ? -1 : i;
+            box.isNetworkTile = false;
+            layout.tiles.push_back(box);
+            curX += tileW;
+            if (i + 1 < batteryTileCount) {
+                curX += gapPx;
+            }
+        }
+
+        layout.width = curX + padXPx;
     } else {
         // Vertical taskbar (docked on left/right of screen)
         int maxW = std::max(ScI(54.0f, dpi), taskbarThickness - ScI(8.0f, dpi));
-        tileW = std::min(tileW, maxW);
-        layout.width = std::min(taskbarThickness, tileW + padXPx * 2);
-        layout.height = padYPx * 2 + count * tileH + (count - 1) * gapPx;
-        int leftX = (layout.width - tileW) / 2;
+        int vTileW = std::min(tileW, maxW);
+        int vNetW  = std::min(netWPx, maxW);
+        int maxItemW = showNetwork ? std::max(vTileW, vNetW) : vTileW;
+        layout.width = std::min(taskbarThickness, maxItemW + padXPx * 2);
 
-        for (int i = 0; i < count; ++i) {
-            int ty = padYPx + i * (tileH + gapPx);
-            TileHitBox box;
-            box.rect = { leftX, ty, leftX + tileW, ty + tileH };
-            box.deviceIndex = emptyPlaceholder ? -1 : i;
-            layout.tiles.push_back(box);
+        int curY = padYPx;
+        if (showNetwork) {
+            int leftX = (layout.width - vNetW) / 2;
+            TileHitBox netBox;
+            netBox.rect = { leftX, curY, leftX + vNetW, curY + tileH };
+            netBox.deviceIndex = -1;
+            netBox.isNetworkTile = true;
+            layout.tiles.push_back(netBox);
+            curY += tileH;
+            if (batteryTileCount > 0) curY += gapPx;
         }
+
+        int leftX = (layout.width - vTileW) / 2;
+        for (int i = 0; i < batteryTileCount; ++i) {
+            TileHitBox box;
+            box.rect = { leftX, curY, leftX + vTileW, curY + tileH };
+            box.deviceIndex = emptyPlaceholder ? -1 : i;
+            box.isNetworkTile = false;
+            layout.tiles.push_back(box);
+            curY += tileH;
+            if (i + 1 < batteryTileCount) curY += gapPx;
+        }
+
+        layout.height = curY + padYPx;
     }
 
     return layout;
@@ -436,10 +783,7 @@ bool RenderToLayeredWindow(
     HWND hwnd,
     const std::vector<BatteryDevice>& devices,
     const WidgetLayout& layout,
-    UINT dpi,
-    bool lightTaskbar,
-    int hoveredIndex,
-    bool refreshFlash,
+    const RenderParams& params,
     const POINT* ptDst)
 {
     if (!hwnd || !IsWindow(hwnd) || layout.width <= 0 || layout.height <= 0) {
@@ -481,23 +825,10 @@ bool RenderToLayeredWindow(
         g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
         g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
 
-        // Imperceptible alpha=1 backdrop so clicks in small gaps between capsules still open our menu
+        // Imperceptible alpha=1 backdrop so clicks in small gaps between tiles still open our menu
         g.Clear(Gdiplus::Color(1, 0, 0, 0));
 
-        if (devices.empty()) {
-            BatteryDevice placeholder;
-            placeholder.kind = DeviceKind::Bluetooth;
-            placeholder.percent = -1;
-            placeholder.connected = false;
-            if (!layout.tiles.empty()) {
-                DrawBatteryTile(g, placeholder, layout.tiles[0].rect, dpi, lightTaskbar, hoveredIndex == 0, refreshFlash);
-            }
-        } else {
-            for (size_t i = 0; i < layout.tiles.size() && i < devices.size(); ++i) {
-                bool isHovered = (hoveredIndex == static_cast<int>(i));
-                DrawBatteryTile(g, devices[i], layout.tiles[i].rect, dpi, lightTaskbar, isHovered, refreshFlash);
-            }
-        }
+        DrawAllTiles(g, devices, layout, params);
     }
 
     POINT ptSrc = { 0, 0 };
@@ -528,10 +859,7 @@ bool RenderToPaintDC(
     HDC targetDC,
     const std::vector<BatteryDevice>& devices,
     const WidgetLayout& layout,
-    UINT dpi,
-    bool lightTaskbar,
-    int hoveredIndex,
-    bool refreshFlash)
+    const RenderParams& params)
 {
     if (!targetDC || layout.width <= 0 || layout.height <= 0) {
         return false;
@@ -559,20 +887,7 @@ bool RenderToPaintDC(
             static_cast<BYTE>((kColorKeyRgb >> 8) & 0xFFu),
             static_cast<BYTE>((kColorKeyRgb >> 16) & 0xFFu)));
 
-        if (devices.empty()) {
-            BatteryDevice placeholder;
-            placeholder.kind = DeviceKind::Bluetooth;
-            placeholder.percent = -1;
-            placeholder.connected = false;
-            if (!layout.tiles.empty()) {
-                DrawBatteryTile(g, placeholder, layout.tiles[0].rect, dpi, lightTaskbar, hoveredIndex == 0, refreshFlash);
-            }
-        } else {
-            for (size_t i = 0; i < layout.tiles.size() && i < devices.size(); ++i) {
-                bool isHovered = (hoveredIndex == static_cast<int>(i));
-                DrawBatteryTile(g, devices[i], layout.tiles[i].rect, dpi, lightTaskbar, isHovered, refreshFlash);
-            }
-        }
+        DrawAllTiles(g, devices, layout, params);
     }
 
     BOOL ok = BitBlt(targetDC, 0, 0, layout.width, layout.height, memDC, 0, 0, SRCCOPY);

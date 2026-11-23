@@ -1,6 +1,7 @@
 #pragma once
 
 #include "battery_model.h"
+#include <optional>
 #include <string>
 
 namespace SettingsStore {
@@ -10,4 +11,6 @@ namespace SettingsStore {
     bool SetAutoStartEnabled(bool enable);
     bool IsDeviceHidden(const AppSettings& s, const std::wstring& id);
     void ToggleDeviceHidden(AppSettings& s, const std::wstring& id);
+    std::optional<DeviceKind> GetIconOverride(const AppSettings& s, const std::wstring& id);
+    void CycleIconOverride(AppSettings& s, const std::wstring& id);
 }

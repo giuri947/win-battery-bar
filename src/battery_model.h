@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,17 @@ enum class DeviceKind : int {
     Keyboard = 4,
     Gamepad = 5,
     Bluetooth = 6
+};
+
+enum class DisplayStyle : int {
+    Full = 0,         // Classic 72x24 BatteryBar capsules (icon + %)
+    Compact = 1,      // Tighter 64x22 BatteryBar capsules
+    UltraCompact = 2  // Very compact 28x26 icon + 10%-step mini battery bar
+};
+
+enum class NetUnitMode : int {
+    BytesPerSec = 0,  // B/s, KB/s, MB/s, GB/s
+    BitsPerSec = 1    // bps, Kbps, Mbps, Gbps
 };
 
 struct BatteryDevice {
@@ -27,13 +39,27 @@ struct BatteryDevice {
     uint64_t updatedTickMs = 0;
 };
 
+struct NetworkStats {
+    bool available = false;
+    double downBytesPerSec = 0.0;
+    double upBytesPerSec = 0.0;
+    uint64_t totalDownBytes = 0;
+    uint64_t totalUpBytes = 0;
+    std::wstring adapterSummary;
+    uint64_t updatedTickMs = 0;
+};
+
 struct AppSettings {
+    DisplayStyle displayStyle = DisplayStyle::Full;
     bool showLaptop = true;
     bool showDisconnected = false;
+    bool showNetwork = false;
+    NetUnitMode netUnits = NetUnitMode::BytesPerSec;
     bool autoStart = false;
-    bool compactMode = false;   // Compact slightly tighter capsules if user prefers
+    int lowBatteryThreshold = 20;  // 10..35: turns capsule/icon vivid red (no notifications)
     int pollIntervalSec = 30;
-    std::vector<std::wstring> hiddenIds; // Optional per-device hide list
+    std::vector<std::wstring> hiddenIds;             // Optional per-device hide list
+    std::map<std::wstring, DeviceKind> iconOverrides; // Optional manual per-device icon override
 };
 
 inline int DeviceSortOrder(DeviceKind kind) {
@@ -60,4 +86,13 @@ inline const wchar_t* DeviceKindLabel(DeviceKind kind) {
         case DeviceKind::Bluetooth:  return L"Bluetooth";
     }
     return L"Device";
+}
+
+inline const wchar_t* DisplayStyleLabel(DisplayStyle style) {
+    switch (style) {
+        case DisplayStyle::Full:         return L"Full";
+        case DisplayStyle::Compact:      return L"Compact";
+        case DisplayStyle::UltraCompact: return L"Ultra-Compact";
+    }
+    return L"Full";
 }

@@ -36,7 +36,13 @@ LaunchOptions ParseArgs() {
         } else if (arg == L"--demo-hover" && i + 1 < argc) {
             opts.demoHoverIndex = _wtoi(argv[++i]);
         } else if (arg == L"--demo-compact") {
-            opts.forceCompact = true;
+            opts.forceStyle = DisplayStyle::Compact;
+        } else if (arg == L"--demo-ultra") {
+            opts.forceStyle = DisplayStyle::UltraCompact;
+        } else if (arg == L"--demo-net") {
+            opts.forceShowNetwork = true;
+        } else if (arg == L"--demo-settings") {
+            opts.demoOpenSettings = true;
         } else if (arg == L"--demo-light") {
             opts.forceLightTheme = true;
         } else if (arg == L"--status-file" && i + 1 < argc) {

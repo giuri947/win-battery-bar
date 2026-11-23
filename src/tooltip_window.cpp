@@ -1,4 +1,5 @@
 #include "tooltip_window.h"
+#include "network_monitor.h"
 
 #include <windows.h>
 #include <objidl.h>
@@ -39,11 +40,12 @@ void AddRoundedRect(Gdiplus::GraphicsPath& path, float x, float y, float w, floa
     path.CloseFigure();
 }
 
-Gdiplus::Color AccentForLevel(int percent, bool connected, bool charging) {
+Gdiplus::Color AccentForLevel(int percent, bool connected, bool charging, int lowThreshold, bool isNet) {
     using namespace Gdiplus;
+    if (isNet) return Color(255, 62, 184, 245);
     if (!connected || percent < 0) return Color(255, 130, 138, 150);
-    if (percent <= 20) return Color(255, 232, 72, 76);
-    if (percent <= 40) return Color(255, 235, 162, 24);
+    if (percent <= lowThreshold) return Color(255, 240, 62, 66);
+    if (percent <= std::max(40, lowThreshold + 15)) return Color(255, 235, 162, 24);
     if (charging)      return Color(255, 42, 196, 130);
     return Color(255, 46, 188, 106);
 }
@@ -104,17 +106,44 @@ void TooltipWindow::ShowForDevice(
     const RECT& anchorScreenRect,
     UINT dpi,
     bool lightTheme,
-    bool horizontal)
+    bool horizontal,
+    int lowThreshold)
 {
     std::wstring pctText = (dev.percent >= 0) ? (std::to_wstring(dev.percent) + L"%") : L"--";
     std::wstring subtitle = dev.sourceLabel;
-    if (!dev.extraStatus.empty()) {
+    std::wstring extra = dev.extraStatus;
+    if (dev.connected && dev.percent >= 0 && dev.percent <= lowThreshold &&
+        !dev.charging && (extra.empty() || extra == L"Connected" || extra == L"Discharging"))
+    {
+        extra = L"Low battery";
+    }
+    if (!extra.empty()) {
         if (!subtitle.empty()) subtitle += L" \x00B7 ";
-        subtitle += dev.extraStatus;
+        subtitle += extra;
     }
     std::wstring footer = FormatUpdatedAgo(dev.updatedTickMs) + L" \x00B7 Click to refresh";
     RenderAndPosition(dev.name, pctText, subtitle, footer, dev.percent, dev.connected, dev.charging,
-        anchorScreenRect, dpi, lightTheme, horizontal);
+        lowThreshold, true, anchorScreenRect, dpi, lightTheme, horizontal);
+}
+
+void TooltipWindow::ShowForNetwork(
+    const NetworkStats& stats,
+    NetUnitMode units,
+    const RECT& anchorScreenRect,
+    UINT dpi,
+    bool lightTheme,
+    bool horizontal)
+{
+    std::wstring downStr = NetworkMonitor::FormatSpeed(stats.downBytesPerSec, units, false);
+    std::wstring upStr   = NetworkMonitor::FormatSpeed(stats.upBytesPerSec, units, false);
+    std::wstring subtitle = L"\x2193 " + downStr + L"   \x2191 " + upStr;
+    std::wstring footer = stats.adapterSummary;
+    if (stats.totalDownBytes > 0 || stats.totalUpBytes > 0) {
+        footer += L" \x00B7 Session " + NetworkMonitor::FormatBytesTotal(stats.totalDownBytes)
+               + L" / " + NetworkMonitor::FormatBytesTotal(stats.totalUpBytes);
+    }
+    RenderAndPosition(L"Network Activity", L"Live", subtitle, footer,
+        100, true, false, 20, false, anchorScreenRect, dpi, lightTheme, horizontal);
 }
 
 void TooltipWindow::ShowEmpty(
@@ -127,8 +156,8 @@ void TooltipWindow::ShowEmpty(
         L"WinBatteryBar",
         L"--",
         L"No Bluetooth battery devices connected",
-        L"Right-click for options \x00B7 Click to scan",
-        -1, false, false, anchorScreenRect, dpi, lightTheme, horizontal);
+        L"Right-click for Settings \x00B7 Click to scan",
+        -1, false, false, 20, true, anchorScreenRect, dpi, lightTheme, horizontal);
 }
 
 void TooltipWindow::RenderAndPosition(
@@ -139,6 +168,8 @@ void TooltipWindow::RenderAndPosition(
     int percent,
     bool connected,
     bool charging,
+    int lowThreshold,
+    bool showBar,
     const RECT& anchorScreenRect,
     UINT dpi,
     bool lightTheme,
@@ -149,8 +180,8 @@ void TooltipWindow::RenderAndPosition(
     using namespace Gdiplus;
 
     int shadowPad = ScI(6.0f, dpi);
-    int cardW = ScI(236.0f, dpi);
-    int cardH = ScI(88.0f, dpi);
+    int cardW = ScI(246.0f, dpi);
+    int cardH = ScI(showBar ? 88.0f : 78.0f, dpi);
     int w = cardW + shadowPad * 2;
     int h = cardH + shadowPad * 2;
 
@@ -216,16 +247,16 @@ void TooltipWindow::RenderAndPosition(
         FontFamily fam(L"Segoe UI");
         Font titleFont(&fam, Sc(12.5f, dpi), FontStyleBold, UnitPixel);
         Font pctFont(&fam, Sc(13.0f, dpi), FontStyleBold, UnitPixel);
-        Font subFont(&fam, Sc(11.0f, dpi), FontStyleRegular, UnitPixel);
+        Font subFont(&fam, Sc(11.0f, dpi), showBar ? FontStyleRegular : FontStyleBold, UnitPixel);
         Font footFont(&fam, Sc(10.5f, dpi), FontStyleRegular, UnitPixel);
 
         Color textMain = lightTheme ? Color(255, 22, 25, 32) : Color(255, 244, 246, 250);
         Color textSub  = lightTheme ? Color(255, 72, 78, 92) : Color(255, 196, 202, 214);
         Color textFoot = lightTheme ? Color(255, 102, 110, 124) : Color(255, 160, 168, 182);
-        Color accent = AccentForLevel(percent, connected, charging);
+        Color accent = AccentForLevel(percent, connected, charging, lowThreshold, !showBar);
 
         SolidBrush bMain(textMain);
-        SolidBrush bSub(textSub);
+        SolidBrush bSub(showBar ? textSub : textMain);
         SolidBrush bFoot(textFoot);
         SolidBrush bAccent(accent);
 
@@ -244,28 +275,38 @@ void TooltipWindow::RenderAndPosition(
         g.DrawString(title.c_str(), -1, &titleFont, titleRect, &leftFmt, &bMain);
         g.DrawString(pctText.c_str(), -1, &pctFont, pctRect, &rightFmt, &bAccent);
 
-        // Sleek progress bar track
-        float barX = cx + pad;
-        float barY = cy + Sc(32.0f, dpi);
-        float barW = cw - pad * 2.0f;
-        float barH = Sc(5.0f, dpi);
-        GraphicsPath track;
-        AddRoundedRect(track, barX, barY, barW, barH, barH * 0.5f);
-        SolidBrush trackBrush(lightTheme ? Color(255, 218, 222, 232) : Color(255, 54, 58, 68));
-        g.FillPath(&trackBrush, &track);
+        if (showBar) {
+            // Sleek progress bar track
+            float barX = cx + pad;
+            float barY = cy + Sc(32.0f, dpi);
+            float barW = cw - pad * 2.0f;
+            float barH = Sc(5.0f, dpi);
+            GraphicsPath track;
+            AddRoundedRect(track, barX, barY, barW, barH, barH * 0.5f);
+            SolidBrush trackBrush(lightTheme ? Color(255, 218, 222, 232) : Color(255, 54, 58, 68));
+            g.FillPath(&trackBrush, &track);
 
-        if (percent > 0) {
-            float fillW = std::max(barH, barW * (static_cast<float>(std::clamp(percent, 0, 100)) / 100.0f));
-            GraphicsPath fill;
-            AddRoundedRect(fill, barX, barY, fillW, barH, barH * 0.5f);
-            g.FillPath(&bAccent, &fill);
+            if (percent > 0) {
+                float fillW = std::max(barH, barW * (static_cast<float>(std::clamp(percent, 0, 100)) / 100.0f));
+                GraphicsPath fill;
+                AddRoundedRect(fill, barX, barY, fillW, barH, barH * 0.5f);
+                g.FillPath(&bAccent, &fill);
+            }
+
+            RectF subRect(cx + pad, cy + Sc(43.5f, dpi), cw - pad * 2.0f, Sc(16.0f, dpi));
+            RectF footRect(cx + pad, cy + Sc(62.5f, dpi), cw - pad * 2.0f, Sc(16.0f, dpi));
+            g.DrawString(subtitle.c_str(), -1, &subFont, subRect, &leftFmt, &bSub);
+            g.DrawString(footer.c_str(), -1, &footFont, footRect, &leftFmt, &bFoot);
+        } else {
+            // Subtle accent divider + bold live network speeds
+            SolidBrush sep(lightTheme ? Color(255, 224, 228, 236) : Color(255, 50, 54, 64));
+            g.FillRectangle(&sep, cx + pad, cy + Sc(29.0f, dpi), cw - pad * 2.0f, std::max(1.0f, Sc(1.0f, dpi)));
+
+            RectF subRect(cx + pad, cy + Sc(35.0f, dpi), cw - pad * 2.0f, Sc(18.0f, dpi));
+            RectF footRect(cx + pad, cy + Sc(54.5f, dpi), cw - pad * 2.0f, Sc(16.0f, dpi));
+            g.DrawString(subtitle.c_str(), -1, &subFont, subRect, &leftFmt, &bSub);
+            g.DrawString(footer.c_str(), -1, &footFont, footRect, &leftFmt, &bFoot);
         }
-
-        // Subtitle & footer
-        RectF subRect(cx + pad, cy + Sc(43.5f, dpi), cw - pad * 2.0f, Sc(16.0f, dpi));
-        RectF footRect(cx + pad, cy + Sc(62.5f, dpi), cw - pad * 2.0f, Sc(16.0f, dpi));
-        g.DrawString(subtitle.c_str(), -1, &subFont, subRect, &leftFmt, &bSub);
-        g.DrawString(footer.c_str(), -1, &footFont, footRect, &leftFmt, &bFoot);
     }
 
     // Position cleanly outside the taskbar edge, clamped to monitor bounds

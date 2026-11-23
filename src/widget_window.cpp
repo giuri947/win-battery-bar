@@ -21,14 +21,19 @@ constexpr UINT WM_APP_SCAN_DONE = WM_APP + 101;
 constexpr UINT_PTR kTimerLayout     = 1;
 constexpr UINT_PTR kTimerFlashEnd   = 2;
 constexpr UINT_PTR kTimerDebounce   = 3;
+constexpr UINT_PTR kTimerNetwork    = 4;
 
+constexpr UINT kCmdOpenSettings     = 1000;
 constexpr UINT kCmdRefresh          = 1001;
 constexpr UINT kCmdShowLaptop       = 1002;
 constexpr UINT kCmdShowDisconnected = 1003;
-constexpr UINT kCmdCompactMode      = 1004;
-constexpr UINT kCmdAutoStart        = 1005;
-constexpr UINT kCmdCopyDiagnostics  = 1006;
-constexpr UINT kCmdExit             = 1007;
+constexpr UINT kCmdShowNetwork      = 1004;
+constexpr UINT kCmdStyleFull        = 1010;
+constexpr UINT kCmdStyleCompact     = 1011;
+constexpr UINT kCmdStyleUltra       = 1012;
+constexpr UINT kCmdAutoStart        = 1015;
+constexpr UINT kCmdCopyDiagnostics  = 1016;
+constexpr UINT kCmdExit             = 1017;
 constexpr UINT kCmdToggleDeviceBase = 2000;
 
 } // namespace
@@ -45,9 +50,13 @@ WidgetWindow::WidgetWindow(const LaunchOptions& opts)
     } else {
         m_settings = SettingsStore::Load();
     }
-    if (m_opts.forceCompact) {
-        m_settings.compactMode = true;
+    if (m_opts.forceStyle.has_value()) {
+        m_settings.displayStyle = *m_opts.forceStyle;
     }
+    if (m_opts.forceShowNetwork) {
+        m_settings.showNetwork = true;
+    }
+    m_pollIntervalSec.store(std::clamp(m_settings.pollIntervalSec, 5, 300));
 }
 
 WidgetWindow::~WidgetWindow() {
@@ -60,6 +69,93 @@ void WidgetWindow::SaveSettingsIfAllowed() {
     }
 }
 
+void WidgetWindow::SyncNetworkTimer() {
+    if (!m_hostHwnd || !IsWindow(m_hostHwnd)) return;
+    if (m_settings.showNetwork) {
+        if (m_opts.demoMode) {
+            m_netStats = NetworkMonitor::BuildDemoStats();
+            KillTimer(m_hostHwnd, kTimerNetwork);
+        } else {
+            m_netStats = m_netMonitor.Sample();
+            SetTimer(m_hostHwnd, kTimerNetwork, 1000, nullptr);
+        }
+    } else {
+        KillTimer(m_hostHwnd, kTimerNetwork);
+        m_netMonitor.Reset();
+        m_netStats = NetworkStats{};
+    }
+}
+
+void WidgetWindow::ApplyNewSettings(const AppSettings& updated) {
+    bool pollChanged = (updated.pollIntervalSec != m_settings.pollIntervalSec);
+    bool netChanged  = (updated.showNetwork != m_settings.showNetwork);
+    m_settings = updated;
+    m_pollIntervalSec.store(std::clamp(m_settings.pollIntervalSec, 5, 300));
+    SaveSettingsIfAllowed();
+
+    if (netChanged) {
+        SyncNetworkTimer();
+    }
+    if (pollChanged && !m_opts.demoMode) {
+        m_workerCv.notify_one();
+    }
+
+    ApplyFilteredDevices();
+    UpdateDockAndRedraw(true);
+    if (m_settingsPanel.IsVisible()) {
+        bool light = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
+        m_settingsPanel.UpdateState(m_settings, m_allDevices, m_metrics.dpi, light);
+    }
+    WriteStatusFile();
+}
+
+void WidgetWindow::OpenSettingsPanel(bool keepOpenForDemo) {
+    m_tooltip.Hide();
+    if (m_hoveredTile != -1) {
+        m_hoveredTile = -1;
+        m_trackingMouse = false;
+        RedrawOnly();
+    }
+
+    if (m_settingsPanel.IsVisible() && !keepOpenForDemo) {
+        m_settingsPanel.Hide();
+        return;
+    }
+
+    bool light = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
+    SettingsPanelCallbacks cb;
+    cb.onSettingsChanged = [this](const AppSettings& next) {
+        ApplyNewSettings(next);
+    };
+    cb.onToggleAutoStart = [this](bool enable) {
+        if (!m_opts.demoMode && SettingsStore::SetAutoStartEnabled(enable)) {
+            m_settings.autoStart = enable;
+            SaveSettingsIfAllowed();
+            bool l = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
+            m_settingsPanel.UpdateState(m_settings, m_allDevices, m_metrics.dpi, l);
+        }
+    };
+    cb.onRefreshNow = [this]() {
+        TriggerScanNow(true);
+    };
+    cb.onCopyDiagnostics = [this]() {
+        CopyDiagnosticsToClipboard();
+    };
+    cb.onExitApp = [this]() {
+        PostQuitMessage(0);
+    };
+
+    m_settingsPanel.Show(
+        m_settings,
+        m_allDevices,
+        m_metrics.screenRect,
+        m_metrics.dpi,
+        light,
+        m_opts.demoMode,
+        keepOpenForDemo,
+        std::move(cb));
+}
+
 bool WidgetWindow::CreateWidgetHwnd() {
     if (m_hwnd && IsWindow(m_hwnd)) {
         return true;
@@ -68,7 +164,7 @@ bool WidgetWindow::CreateWidgetHwnd() {
     m_lastRenderOk = false;
     m_lastRenderErr = 0;
     m_trackingMouse = false;
-    m_hoveredIndex = -1;
+    m_hoveredTile = -1;
 
     m_hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -89,7 +185,7 @@ bool WidgetWindow::Create(HINSTANCE hInst) {
     m_hInst = hInst;
     m_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
 
-    // 1. Register and create hidden top-level host window so we always receive system broadcasts
+    // 1. Hidden top-level host window so we always receive system broadcasts
     //    (TaskbarCreated, WM_POWERBROADCAST, WM_DEVICECHANGE, WM_SETTINGCHANGE, WM_ENDSESSION)
     //    and stay alive if explorer.exe restarts and destroys child windows of ReBarWindow32.
     WNDCLASSEXW hostWc = {};
@@ -112,6 +208,7 @@ bool WidgetWindow::Create(HINSTANCE hInst) {
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_DBLCLKS;
     wc.lpfnWndProc = StaticWndProc;
     wc.hInstance = hInst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -119,6 +216,7 @@ bool WidgetWindow::Create(HINSTANCE hInst) {
     RegisterClassExW(&wc);
 
     m_tooltip.Create(hInst);
+    m_settingsPanel.Create(hInst);
 
     if (!CreateWidgetHwnd()) {
         return false;
@@ -127,6 +225,9 @@ bool WidgetWindow::Create(HINSTANCE hInst) {
     if (m_opts.demoMode) {
         m_allDevices = BatteryReader::BuildDemoDevices(m_opts.demoPreset);
         m_lastDiagnostics = L"Demo mode active (preset " + std::to_wstring(m_opts.demoPreset) + L")";
+        if (m_settings.showNetwork) {
+            m_netStats = NetworkMonitor::BuildDemoStats();
+        }
         ApplyFilteredDevices();
     } else {
         // Immediate fast laptop read for instant first frame before BT scan finishes
@@ -148,18 +249,22 @@ bool WidgetWindow::Create(HINSTANCE hInst) {
             m_allDevices.push_back(std::move(laptop));
             ApplyFilteredDevices();
         }
+        SyncNetworkTimer();
         StartWorkerThread();
     }
 
     UpdateDockAndRedraw(true);
 
-    // Optional scripted hover state for automated E2E visual testing
+    // Optional scripted hover or settings-panel preview for automated E2E visual testing
     if (m_opts.demoMode && m_opts.demoHoverIndex >= 0 &&
-        m_opts.demoHoverIndex < static_cast<int>(m_visibleDevices.size()))
+        m_opts.demoHoverIndex < static_cast<int>(m_layout.tiles.size()))
     {
-        m_hoveredIndex = m_opts.demoHoverIndex;
+        m_hoveredTile = m_opts.demoHoverIndex;
         RedrawOnly();
         UpdateTooltipForHover();
+    }
+    if (m_opts.demoMode && m_opts.demoOpenSettings) {
+        OpenSettingsPanel(true);
     }
 
     WriteStatusFile();
@@ -171,11 +276,13 @@ bool WidgetWindow::Create(HINSTANCE hInst) {
 
 void WidgetWindow::Destroy() {
     StopWorkerThread();
+    m_settingsPanel.Destroy();
     m_tooltip.Destroy();
     if (m_hostHwnd && IsWindow(m_hostHwnd)) {
         KillTimer(m_hostHwnd, kTimerLayout);
         KillTimer(m_hostHwnd, kTimerFlashEnd);
         KillTimer(m_hostHwnd, kTimerDebounce);
+        KillTimer(m_hostHwnd, kTimerNetwork);
     }
     if (m_hwnd && IsWindow(m_hwnd)) {
         m_dock.DetachAndRestore(m_hwnd);
@@ -215,6 +322,10 @@ void WidgetWindow::TriggerScanNow(bool showFlash) {
         SetTimer(m_hostHwnd, kTimerFlashEnd, 180, nullptr);
     }
     if (m_opts.demoMode) return;
+    if (m_settings.showNetwork) {
+        m_netStats = m_netMonitor.Sample();
+        RedrawOnly();
+    }
     {
         std::lock_guard<std::mutex> lk(m_workerMu);
         m_scanRequested = true;
@@ -229,13 +340,13 @@ void WidgetWindow::WorkerLoop() {
         // Apartment may already be initialized on this thread
     }
 
-    const int pollIntervalSec = std::clamp(m_settings.pollIntervalSec, 5, 300);
     HWND hostTarget = m_hostHwnd;
 
     while (true) {
         {
             std::unique_lock<std::mutex> lk(m_workerMu);
-            m_workerCv.wait_for(lk, std::chrono::seconds(pollIntervalSec), [&]() {
+            int interval = std::clamp(m_pollIntervalSec.load(), 5, 300);
+            m_workerCv.wait_for(lk, std::chrono::seconds(interval), [&]() {
                 return m_stopWorker || m_scanRequested;
             });
             if (m_stopWorker) break;
@@ -262,21 +373,25 @@ void WidgetWindow::WorkerLoop() {
 
 void WidgetWindow::ApplyFilteredDevices() {
     m_visibleDevices.clear();
-    for (const auto& d : m_allDevices) {
-        if (d.kind == DeviceKind::Laptop && !m_settings.showLaptop) {
+    for (const auto& orig : m_allDevices) {
+        if (orig.kind == DeviceKind::Laptop && !m_settings.showLaptop) {
             continue;
         }
-        if (!d.connected && !m_settings.showDisconnected) {
+        if (!orig.connected && !m_settings.showDisconnected) {
             continue;
         }
-        if (SettingsStore::IsDeviceHidden(m_settings, d.id)) {
+        if (SettingsStore::IsDeviceHidden(m_settings, orig.id)) {
             continue;
         }
-        m_visibleDevices.push_back(d);
+        BatteryDevice d = orig;
+        if (auto ov = SettingsStore::GetIconOverride(m_settings, d.id)) {
+            d.kind = *ov;
+        }
+        m_visibleDevices.push_back(std::move(d));
     }
 
-    if (m_hoveredIndex >= static_cast<int>(m_visibleDevices.size())) {
-        m_hoveredIndex = -1;
+    if (m_hoveredTile >= static_cast<int>(m_layout.tiles.size())) {
+        m_hoveredTile = -1;
         m_tooltip.Hide();
     }
 }
@@ -306,10 +421,14 @@ void WidgetWindow::UpdateDockAndRedraw(bool forceReposition) {
     bool horiz = m_dock.IsHorizontal();
 
     WidgetLayout newLayout = Renderer::ComputeLayout(
-        m_visibleDevices, dpi, thickness, horiz, m_settings.compactMode);
+        m_visibleDevices, dpi, thickness, horiz, m_settings.displayStyle, m_settings.showNetwork);
 
     bool sizeChanged = (newLayout.width != m_layout.width || newLayout.height != m_layout.height);
     m_layout = std::move(newLayout);
+    if (m_hoveredTile >= static_cast<int>(m_layout.tiles.size())) {
+        m_hoveredTile = -1;
+        m_tooltip.Hide();
+    }
 
     DockMetrics newMetrics;
     if (!m_dock.UpdateLayout(m_hwnd, m_layout.width, m_layout.height, forceReposition || sizeChanged, newMetrics)) {
@@ -333,6 +452,10 @@ void WidgetWindow::UpdateDockAndRedraw(bool forceReposition) {
     if (m_tooltip.IsVisible() && (rectChanged || sizeChanged || themeChanged || dpiChanged)) {
         UpdateTooltipForHover();
     }
+    if (m_settingsPanel.IsVisible() && (themeChanged || dpiChanged)) {
+        bool light = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
+        m_settingsPanel.UpdateState(m_settings, m_allDevices, m_metrics.dpi, light);
+    }
 }
 
 void WidgetWindow::EnableColorKeyFallback() {
@@ -346,19 +469,22 @@ void WidgetWindow::EnableColorKeyFallback() {
 
 void WidgetWindow::RedrawOnly() {
     if (!m_hwnd || !IsWindow(m_hwnd)) return;
-    bool light = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
+
+    RenderParams rp;
+    rp.style = m_settings.displayStyle;
+    rp.lowBatteryThreshold = m_settings.lowBatteryThreshold;
+    rp.showNetwork = m_settings.showNetwork;
+    rp.netUnits = m_settings.netUnits;
+    rp.netStats = m_netStats;
+    rp.dpi = m_metrics.dpi;
+    rp.lightTaskbar = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
+    rp.hoveredTileIndex = m_hoveredTile;
+    rp.refreshFlash = m_refreshFlash;
 
     if (!m_useColorKeyFallback) {
         SetLastError(0);
         m_lastRenderOk = Renderer::RenderToLayeredWindow(
-            m_hwnd,
-            m_visibleDevices,
-            m_layout,
-            m_metrics.dpi,
-            light,
-            m_hoveredIndex,
-            m_refreshFlash,
-            nullptr);
+            m_hwnd, m_visibleDevices, m_layout, rp, nullptr);
         m_lastRenderErr = m_lastRenderOk ? 0 : GetLastError();
         if (m_lastRenderOk) {
             return;
@@ -383,12 +509,17 @@ int WidgetWindow::HitTestTile(int clientX, int clientY) const {
 }
 
 void WidgetWindow::UpdateTooltipForHover() {
-    if (m_hoveredIndex < 0 || m_hoveredIndex >= static_cast<int>(m_layout.tiles.size())) {
+    if (m_settingsPanel.IsVisible()) {
+        m_tooltip.Hide();
+        return;
+    }
+    if (m_hoveredTile < 0 || m_hoveredTile >= static_cast<int>(m_layout.tiles.size())) {
         m_tooltip.Hide();
         return;
     }
 
-    RECT tileLocal = m_layout.tiles[static_cast<size_t>(m_hoveredIndex)].rect;
+    const auto& box = m_layout.tiles[static_cast<size_t>(m_hoveredTile)];
+    RECT tileLocal = box.rect;
     RECT anchorScreen = {
         m_metrics.screenRect.left + tileLocal.left,
         m_metrics.screenRect.top + tileLocal.top,
@@ -397,18 +528,23 @@ void WidgetWindow::UpdateTooltipForHover() {
     };
 
     bool light = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
-    if (m_visibleDevices.empty()) {
+    if (box.isNetworkTile) {
+        m_tooltip.ShowForNetwork(m_netStats, m_settings.netUnits, anchorScreen, m_metrics.dpi, light, m_metrics.horizontal);
+    } else if (box.deviceIndex < 0 || static_cast<size_t>(box.deviceIndex) >= m_visibleDevices.size()) {
         m_tooltip.ShowEmpty(anchorScreen, m_metrics.dpi, light, m_metrics.horizontal);
-    } else if (m_hoveredIndex < static_cast<int>(m_visibleDevices.size())) {
-        m_tooltip.ShowForDevice(m_visibleDevices[static_cast<size_t>(m_hoveredIndex)],
-            anchorScreen, m_metrics.dpi, light, m_metrics.horizontal);
+    } else {
+        m_tooltip.ShowForDevice(
+            m_visibleDevices[static_cast<size_t>(box.deviceIndex)],
+            anchorScreen, m_metrics.dpi, light, m_metrics.horizontal,
+            m_settings.lowBatteryThreshold);
     }
 }
 
 void WidgetWindow::ShowContextMenu(POINT screenPt) {
     m_tooltip.Hide();
-    if (m_hoveredIndex != -1) {
-        m_hoveredIndex = -1;
+    m_settingsPanel.Hide();
+    if (m_hoveredTile != -1) {
+        m_hoveredTile = -1;
         m_trackingMouse = false;
         RedrawOnly();
     }
@@ -416,15 +552,29 @@ void WidgetWindow::ShowContextMenu(POINT screenPt) {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
 
+    AppendMenuW(menu, MF_STRING, kCmdOpenSettings, L"Settings...");
+    SetMenuDefaultItem(menu, kCmdOpenSettings, FALSE);
     AppendMenuW(menu, MF_STRING, kCmdRefresh, L"Refresh Now");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
+    // Display Style submenu
+    HMENU styleMenu = CreatePopupMenu();
+    if (styleMenu) {
+        AppendMenuW(styleMenu, MF_STRING | (m_settings.displayStyle == DisplayStyle::Full ? MF_CHECKED : MF_UNCHECKED),
+            kCmdStyleFull, L"Full Capsules");
+        AppendMenuW(styleMenu, MF_STRING | (m_settings.displayStyle == DisplayStyle::Compact ? MF_CHECKED : MF_UNCHECKED),
+            kCmdStyleCompact, L"Compact Capsules");
+        AppendMenuW(styleMenu, MF_STRING | (m_settings.displayStyle == DisplayStyle::UltraCompact ? MF_CHECKED : MF_UNCHECKED),
+            kCmdStyleUltra, L"Ultra-Compact (Icon + Bar)");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(styleMenu), L"Display Style");
+    }
+
     AppendMenuW(menu, MF_STRING | (m_settings.showLaptop ? MF_CHECKED : MF_UNCHECKED),
         kCmdShowLaptop, L"Show Laptop Battery");
+    AppendMenuW(menu, MF_STRING | (m_settings.showNetwork ? MF_CHECKED : MF_UNCHECKED),
+        kCmdShowNetwork, L"Show Network Activity (\x2193/\x2191)");
     AppendMenuW(menu, MF_STRING | (m_settings.showDisconnected ? MF_CHECKED : MF_UNCHECKED),
         kCmdShowDisconnected, L"Show Disconnected Devices");
-    AppendMenuW(menu, MF_STRING | (m_settings.compactMode ? MF_CHECKED : MF_UNCHECKED),
-        kCmdCompactMode, L"Compact Capsules");
 
     // Per-device visibility submenu
     HMENU devMenu = CreatePopupMenu();
@@ -480,22 +630,34 @@ void WidgetWindow::ShowContextMenu(POINT screenPt) {
 
     if (cmd == 0) return;
 
-    if (cmd == kCmdRefresh) {
+    if (cmd == kCmdOpenSettings) {
+        OpenSettingsPanel(false);
+    } else if (cmd == kCmdRefresh) {
         TriggerScanNow(true);
+    } else if (cmd == kCmdStyleFull) {
+        AppSettings next = m_settings;
+        next.displayStyle = DisplayStyle::Full;
+        ApplyNewSettings(next);
+    } else if (cmd == kCmdStyleCompact) {
+        AppSettings next = m_settings;
+        next.displayStyle = DisplayStyle::Compact;
+        ApplyNewSettings(next);
+    } else if (cmd == kCmdStyleUltra) {
+        AppSettings next = m_settings;
+        next.displayStyle = DisplayStyle::UltraCompact;
+        ApplyNewSettings(next);
     } else if (cmd == kCmdShowLaptop) {
-        m_settings.showLaptop = !m_settings.showLaptop;
-        SaveSettingsIfAllowed();
-        ApplyFilteredDevices();
-        UpdateDockAndRedraw(true);
+        AppSettings next = m_settings;
+        next.showLaptop = !next.showLaptop;
+        ApplyNewSettings(next);
+    } else if (cmd == kCmdShowNetwork) {
+        AppSettings next = m_settings;
+        next.showNetwork = !next.showNetwork;
+        ApplyNewSettings(next);
     } else if (cmd == kCmdShowDisconnected) {
-        m_settings.showDisconnected = !m_settings.showDisconnected;
-        SaveSettingsIfAllowed();
-        ApplyFilteredDevices();
-        UpdateDockAndRedraw(true);
-    } else if (cmd == kCmdCompactMode) {
-        m_settings.compactMode = !m_settings.compactMode;
-        SaveSettingsIfAllowed();
-        UpdateDockAndRedraw(true);
+        AppSettings next = m_settings;
+        next.showDisconnected = !next.showDisconnected;
+        ApplyNewSettings(next);
     } else if (cmd == kCmdAutoStart) {
         if (!m_opts.demoMode) {
             bool target = !m_settings.autoStart;
@@ -511,10 +673,9 @@ void WidgetWindow::ShowContextMenu(POINT screenPt) {
     } else if (cmd >= kCmdToggleDeviceBase && cmd < kCmdToggleDeviceBase + 32) {
         size_t idx = static_cast<size_t>(cmd - kCmdToggleDeviceBase);
         if (idx < m_allDevices.size()) {
-            SettingsStore::ToggleDeviceHidden(m_settings, m_allDevices[idx].id);
-            SaveSettingsIfAllowed();
-            ApplyFilteredDevices();
-            UpdateDockAndRedraw(true);
+            AppSettings next = m_settings;
+            SettingsStore::ToggleDeviceHidden(next, m_allDevices[idx].id);
+            ApplyNewSettings(next);
         }
     }
 }
@@ -526,7 +687,10 @@ void WidgetWindow::CopyDiagnosticsToClipboard() {
        << L" | Win11: " << (m_metrics.isWin11 ? L"yes" : L"no")
        << L" | DPI: " << m_metrics.dpi
        << L" | LightTheme: " << (m_metrics.lightTheme ? L"yes" : L"no")
+       << L" | Style: " << DisplayStyleLabel(m_settings.displayStyle)
        << L" | Render: " << (m_useColorKeyFallback ? L"colorkey" : L"ulw") << L"\r\n"
+       << L"LowThreshold: " << m_settings.lowBatteryThreshold << L"%"
+       << L" | Network: " << (m_settings.showNetwork ? (L"on (" + m_netStats.adapterSummary + L")") : L"off") << L"\r\n"
        << L"Visible devices: " << m_visibleDevices.size() << L" / " << m_allDevices.size() << L"\r\n\r\n"
        << m_lastDiagnostics;
 
@@ -555,6 +719,10 @@ void WidgetWindow::CopyDiagnosticsToClipboard() {
 void WidgetWindow::WriteStatusFile() {
     if (m_opts.statusFilePath.empty()) return;
 
+    const char* styleStr = "full";
+    if (m_settings.displayStyle == DisplayStyle::Compact) styleStr = "compact";
+    else if (m_settings.displayStyle == DisplayStyle::UltraCompact) styleStr = "ultra";
+
     std::ostringstream json;
     json << "{\n"
          << "  \"embedded\": " << (m_metrics.embedded ? "true" : "false") << ",\n"
@@ -563,6 +731,8 @@ void WidgetWindow::WriteStatusFile() {
          << "  \"lightTheme\": " << (m_metrics.lightTheme ? "true" : "false") << ",\n"
          << "  \"dpi\": " << m_metrics.dpi << ",\n"
          << "  \"taskbarThickness\": " << m_metrics.taskbarThickness << ",\n"
+         << "  \"displayStyle\": \"" << styleStr << "\",\n"
+         << "  \"showNetwork\": " << (m_settings.showNetwork ? "true" : "false") << ",\n"
          << "  \"renderMode\": \"" << (m_useColorKeyFallback ? "colorkey" : "ulw") << "\",\n"
          << "  \"renderOk\": " << (m_lastRenderOk ? "true" : "false") << ",\n"
          << "  \"renderError\": " << m_lastRenderErr << ",\n"
@@ -573,7 +743,9 @@ void WidgetWindow::WriteStatusFile() {
          << m_metrics.screenRect.right << ", "
          << m_metrics.screenRect.bottom << "],\n"
          << "  \"deviceCount\": " << m_visibleDevices.size() << ",\n"
-         << "  \"tooltipVisible\": " << (m_tooltip.IsVisible() ? "true" : "false") << "\n"
+         << "  \"tileCount\": " << m_layout.tiles.size() << ",\n"
+         << "  \"tooltipVisible\": " << (m_tooltip.IsVisible() ? "true" : "false") << ",\n"
+         << "  \"settingsVisible\": " << (m_settingsPanel.IsVisible() ? "true" : "false") << "\n"
          << "}\n";
 
     std::ofstream ofs(std::filesystem::path(m_opts.statusFilePath), std::ios::binary | std::ios::trunc);
@@ -624,6 +796,17 @@ LRESULT WidgetWindow::HostWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (wp == kTimerDebounce) {
             KillTimer(hwnd, kTimerDebounce);
             TriggerScanNow(false);
+        } else if (wp == kTimerNetwork) {
+            if (m_settings.showNetwork && !m_opts.demoMode) {
+                m_netStats = m_netMonitor.Sample();
+                RedrawOnly();
+                if (m_tooltip.IsVisible() && m_hoveredTile >= 0 &&
+                    m_hoveredTile < static_cast<int>(m_layout.tiles.size()) &&
+                    m_layout.tiles[static_cast<size_t>(m_hoveredTile)].isNetworkTile)
+                {
+                    UpdateTooltipForHover();
+                }
+            }
         }
         return 0;
 
@@ -637,8 +820,12 @@ LRESULT WidgetWindow::HostWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         m_lastDiagnostics = std::move(res.diagnostics);
         ApplyFilteredDevices();
         UpdateDockAndRedraw(true);
-        if (m_hoveredIndex >= 0) {
+        if (m_hoveredTile >= 0) {
             UpdateTooltipForHover();
+        }
+        if (m_settingsPanel.IsVisible()) {
+            bool light = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
+            m_settingsPanel.UpdateState(m_settings, m_allDevices, m_metrics.dpi, light);
         }
         WriteStatusFile();
         return 0;
@@ -715,8 +902,17 @@ LRESULT WidgetWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         PAINTSTRUCT ps = {};
         HDC hdc = BeginPaint(hwnd, &ps);
         if (m_useColorKeyFallback && hdc) {
-            bool light = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
-            Renderer::RenderToPaintDC(hdc, m_visibleDevices, m_layout, m_metrics.dpi, light, m_hoveredIndex, m_refreshFlash);
+            RenderParams rp;
+            rp.style = m_settings.displayStyle;
+            rp.lowBatteryThreshold = m_settings.lowBatteryThreshold;
+            rp.showNetwork = m_settings.showNetwork;
+            rp.netUnits = m_settings.netUnits;
+            rp.netStats = m_netStats;
+            rp.dpi = m_metrics.dpi;
+            rp.lightTaskbar = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
+            rp.hoveredTileIndex = m_hoveredTile;
+            rp.refreshFlash = m_refreshFlash;
+            Renderer::RenderToPaintDC(hdc, m_visibleDevices, m_layout, rp);
         }
         EndPaint(hwnd, &ps);
         return 0;
@@ -734,8 +930,8 @@ LRESULT WidgetWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int x = static_cast<int>(static_cast<short>(LOWORD(lp)));
         int y = static_cast<int>(static_cast<short>(HIWORD(lp)));
         int hit = HitTestTile(x, y);
-        if (hit != m_hoveredIndex) {
-            m_hoveredIndex = hit;
+        if (hit != m_hoveredTile) {
+            m_hoveredTile = hit;
             RedrawOnly();
             UpdateTooltipForHover();
         }
@@ -744,15 +940,28 @@ LRESULT WidgetWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_MOUSELEAVE:
         m_trackingMouse = false;
-        if (m_hoveredIndex != -1) {
-            m_hoveredIndex = -1;
+        if (m_hoveredTile != -1) {
+            m_hoveredTile = -1;
             RedrawOnly();
             m_tooltip.Hide();
         }
         return 0;
 
     case WM_LBUTTONUP:
-        TriggerScanNow(true);
+        if (m_ignoreNextLButtonUp) {
+            m_ignoreNextLButtonUp = false;
+            return 0;
+        }
+        if (m_settingsPanel.IsVisible()) {
+            m_settingsPanel.Hide();
+        } else {
+            TriggerScanNow(true);
+        }
+        return 0;
+
+    case WM_LBUTTONDBLCLK:
+        m_ignoreNextLButtonUp = true;
+        OpenSettingsPanel(false);
         return 0;
 
     case WM_RBUTTONUP: {
@@ -772,6 +981,7 @@ LRESULT WidgetWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_DESTROY:
         m_tooltip.Hide();
+        m_settingsPanel.Hide();
         // Restore tasklist without calling SetParent on a window currently being destroyed
         m_dock.DetachAndRestore(nullptr);
         return 0;

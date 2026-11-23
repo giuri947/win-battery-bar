@@ -68,9 +68,20 @@ AppSettings Load() {
     HKEY key = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_READ, &key) == ERROR_SUCCESS) {
         DWORD v = 0;
+        if (ReadDword(key, L"DisplayStyle", v) && v <= 2) {
+            s.displayStyle = static_cast<DisplayStyle>(v);
+        } else if (ReadDword(key, L"CompactMode", v) && v != 0) {
+            s.displayStyle = DisplayStyle::Compact;
+        }
         if (ReadDword(key, L"ShowLaptop", v))       s.showLaptop = (v != 0);
         if (ReadDword(key, L"ShowDisconnected", v)) s.showDisconnected = (v != 0);
-        if (ReadDword(key, L"CompactMode", v))      s.compactMode = (v != 0);
+        if (ReadDword(key, L"ShowNetwork", v))      s.showNetwork = (v != 0);
+        if (ReadDword(key, L"NetUnits", v) && v <= 1) {
+            s.netUnits = static_cast<NetUnitMode>(v);
+        }
+        if (ReadDword(key, L"LowBatteryThreshold", v) && v >= 10 && v <= 35) {
+            s.lowBatteryThreshold = static_cast<int>(v);
+        }
         if (ReadDword(key, L"PollIntervalSec", v) && v >= 5 && v <= 300) {
             s.pollIntervalSec = static_cast<int>(v);
         }
@@ -82,6 +93,19 @@ AppSettings Load() {
                 s.hiddenIds.push_back(item);
             }
         }
+        std::wstring overrides = ReadString(key, L"IconOverrides");
+        std::wstringstream oss(overrides);
+        std::wstring pairStr;
+        while (std::getline(oss, pairStr, L'|')) {
+            size_t eq = pairStr.rfind(L'=');
+            if (eq != std::wstring::npos && eq > 0 && eq + 1 < pairStr.size()) {
+                std::wstring id = pairStr.substr(0, eq);
+                int kv = _wtoi(pairStr.substr(eq + 1).c_str());
+                if (kv >= 0 && kv <= 6) {
+                    s.iconOverrides[id] = static_cast<DeviceKind>(kv);
+                }
+            }
+        }
         RegCloseKey(key);
     }
     s.autoStart = IsAutoStartEnabled();
@@ -91,10 +115,14 @@ AppSettings Load() {
 void Save(const AppSettings& s) {
     HKEY key = nullptr;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr) == ERROR_SUCCESS) {
+        WriteDword(key, L"DisplayStyle", static_cast<DWORD>(s.displayStyle));
+        WriteDword(key, L"CompactMode", s.displayStyle == DisplayStyle::Compact ? 1 : 0);
         WriteDword(key, L"ShowLaptop", s.showLaptop ? 1 : 0);
         WriteDword(key, L"ShowDisconnected", s.showDisconnected ? 1 : 0);
-        WriteDword(key, L"CompactMode", s.compactMode ? 1 : 0);
-        WriteDword(key, L"PollIntervalSec", static_cast<DWORD>(s.pollIntervalSec));
+        WriteDword(key, L"ShowNetwork", s.showNetwork ? 1 : 0);
+        WriteDword(key, L"NetUnits", static_cast<DWORD>(s.netUnits));
+        WriteDword(key, L"LowBatteryThreshold", static_cast<DWORD>(std::clamp(s.lowBatteryThreshold, 10, 35)));
+        WriteDword(key, L"PollIntervalSec", static_cast<DWORD>(std::clamp(s.pollIntervalSec, 5, 300)));
 
         std::wstring hidden;
         for (size_t i = 0; i < s.hiddenIds.size(); ++i) {
@@ -102,6 +130,15 @@ void Save(const AppSettings& s) {
             hidden += s.hiddenIds[i];
         }
         WriteString(key, L"HiddenIds", hidden);
+
+        std::wstring overrides;
+        bool first = true;
+        for (const auto& kv : s.iconOverrides) {
+            if (!first) overrides += L'|';
+            first = false;
+            overrides += kv.first + L"=" + std::to_wstring(static_cast<int>(kv.second));
+        }
+        WriteString(key, L"IconOverrides", overrides);
         RegCloseKey(key);
     }
 }
@@ -150,6 +187,41 @@ void ToggleDeviceHidden(AppSettings& s, const std::wstring& id) {
     } else {
         s.hiddenIds.push_back(id);
     }
+}
+
+std::optional<DeviceKind> GetIconOverride(const AppSettings& s, const std::wstring& id) {
+    auto it = s.iconOverrides.find(id);
+    if (it == s.iconOverrides.end()) return std::nullopt;
+    return it->second;
+}
+
+void CycleIconOverride(AppSettings& s, const std::wstring& id) {
+    // Cycle: Auto (absent) -> Mouse -> Headphones -> Earbuds -> Keyboard -> Gamepad -> Laptop -> Bluetooth -> Auto
+    static constexpr DeviceKind kOrder[] = {
+        DeviceKind::Mouse,
+        DeviceKind::Headphones,
+        DeviceKind::Earbuds,
+        DeviceKind::Keyboard,
+        DeviceKind::Gamepad,
+        DeviceKind::Laptop,
+        DeviceKind::Bluetooth
+    };
+    auto it = s.iconOverrides.find(id);
+    if (it == s.iconOverrides.end()) {
+        s.iconOverrides[id] = kOrder[0];
+        return;
+    }
+    for (size_t i = 0; i < sizeof(kOrder) / sizeof(kOrder[0]); ++i) {
+        if (kOrder[i] == it->second) {
+            if (i + 1 < sizeof(kOrder) / sizeof(kOrder[0])) {
+                it->second = kOrder[i + 1];
+            } else {
+                s.iconOverrides.erase(it);
+            }
+            return;
+        }
+    }
+    s.iconOverrides.erase(it);
 }
 
 } // namespace SettingsStore

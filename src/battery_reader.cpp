@@ -923,6 +923,25 @@ std::vector<BatteryDevice> BuildDemoDevices(int preset) {
             L"ble:998877665544", L"Keychron K3 Pro", L"Bluetooth LE", L"Low battery",
             DeviceKind::Keyboard, 14, true, false, false, nowMs
         });
+    } else if (preset == 3) {
+        // 0%..100% in 10% increments (11 ultra-compact icon+mini-bar steps)
+        static constexpr DeviceKind kKinds[11] = {
+            DeviceKind::Headphones, DeviceKind::Mouse, DeviceKind::Headphones,
+            DeviceKind::Mouse, DeviceKind::Earbuds, DeviceKind::Keyboard,
+            DeviceKind::Headphones, DeviceKind::Mouse, DeviceKind::Laptop,
+            DeviceKind::Headphones, DeviceKind::Mouse
+        };
+        for (int i = 0; i <= 10; ++i) {
+            int pct = i * 10;
+            bool chg = (i == 8); // 80% charging laptop showcase
+            list.push_back({
+                L"step:" + std::to_wstring(pct),
+                std::wstring(DeviceKindLabel(kKinds[i])) + L" " + std::to_wstring(pct) + L"%",
+                L"Bluetooth LE",
+                (pct <= 20) ? L"Low battery" : (chg ? L"Plugged in, charging" : L"Connected"),
+                kKinds[i], pct, true, chg, chg, nowMs
+            });
+        }
     } else {
         // 2-device BT-only mode (when user hides Laptop battery to sit beside existing BatteryBar)
         list.push_back({
@@ -930,8 +949,8 @@ std::vector<BatteryDevice> BuildDemoDevices(int preset) {
             DeviceKind::Mouse, 78, true, false, false, nowMs
         });
         list.push_back({
-            L"bt:112233445566", L"WH-1000XM4", L"Bluetooth (HFP)", L"Connected",
-            DeviceKind::Headphones, 35, true, false, false, nowMs
+            L"bt:112233445566", L"WH-1000XM4", L"Bluetooth (HFP)", L"Low battery",
+            DeviceKind::Headphones, 15, true, false, false, nowMs
         });
     }
 
