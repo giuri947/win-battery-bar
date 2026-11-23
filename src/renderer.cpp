@@ -78,12 +78,12 @@ void DrawDeviceIcon(Gdiplus::Graphics& g, DeviceKind kind, bool charging, float 
         case DeviceKind::Laptop: {
             // Laptop screen rectangle
             GraphicsPath scr;
-            AddRoundedRect(scr, ix + s * 0.14f, iy + s * 0.16f, s * 0.72f, s * 0.50f, s * 0.08f);
+            AddRoundedRect(scr, ix + s * 0.13f, iy + s * 0.13f, s * 0.74f, s * 0.55f, s * 0.08f);
             g.DrawPath(&p, &scr);
             // Laptop keyboard base
             Pen basePen(col, std::max(1.5f, stroke * 1.35f));
             basePen.SetLineCap(LineCapRound, LineCapRound, DashCapRound);
-            g.DrawLine(&basePen, ix + s * 0.04f, iy + s * 0.80f, ix + s * 0.96f, iy + s * 0.80f);
+            g.DrawLine(&basePen, ix + s * 0.04f, iy + s * 0.83f, ix + s * 0.96f, iy + s * 0.83f);
             break;
         }
         case DeviceKind::Mouse: {
@@ -170,20 +170,20 @@ void DrawDeviceIcon(Gdiplus::Graphics& g, DeviceKind kind, bool charging, float 
     // Crisp bright charging lightning bolt inside laptop screen when charging
     if (charging && kind == DeviceKind::Laptop) {
         PointF bolt[6] = {
-            { x + s * 0.55f, y + s * 0.21f },
-            { x + s * 0.37f, y + s * 0.43f },
-            { x + s * 0.50f, y + s * 0.43f },
-            { x + s * 0.45f, y + s * 0.62f },
-            { x + s * 0.65f, y + s * 0.39f },
-            { x + s * 0.52f, y + s * 0.39f }
+            { x + s * 0.57f, y + s * 0.18f },
+            { x + s * 0.34f, y + s * 0.44f },
+            { x + s * 0.49f, y + s * 0.44f },
+            { x + s * 0.43f, y + s * 0.64f },
+            { x + s * 0.67f, y + s * 0.38f },
+            { x + s * 0.52f, y + s * 0.38f }
         };
-        SolidBrush boltBg(Color(160, 0, 0, 0));
+        SolidBrush boltBg(Color(180, 0, 0, 0));
         PointF boltShadow[6];
         for (int i = 0; i < 6; ++i) {
             boltShadow[i] = PointF(bolt[i].X, bolt[i].Y + 0.6f);
         }
         g.FillPolygon(&boltBg, boltShadow, 6);
-        SolidBrush boltFill(Color(255, 255, 232, 102));
+        SolidBrush boltFill(Color(255, 255, 236, 92));
         g.FillPolygon(&boltFill, bolt, 6);
     }
 }
@@ -300,7 +300,7 @@ void DrawBatteryTile(
     if (hovered) {
         borderCol = lightTaskbar ? Color(230, 18, 20, 26) : Color(235, 255, 255, 255);
     } else if (isLow) {
-        borderCol = Color(210, 255, 115, 115);
+        borderCol = lightTaskbar ? Color(230, 204, 44, 48) : Color(210, 255, 115, 115);
     } else {
         borderCol = lightTaskbar ? Color(185, 36, 40, 48) : Color(120, 255, 255, 255);
     }

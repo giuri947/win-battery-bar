@@ -333,6 +333,11 @@ try {
     if (-not $r6.Status -or -not $r6.Status.embedded -or -not $r6.Status.renderOk) {
         throw "Scenario 06 failed assertion: embedded=$($r6.Status.embedded) renderOk=$($r6.Status.renderOk)"
     }
+
+    $r6b = Run-DemoScenario "06b_demo_light_tooltip" @("--demo", "--demo-set", "0", "--demo-light", "--demo-hover", "1")
+    if (-not $r6b.Status -or -not $r6b.Status.tooltipVisible) {
+        throw "Scenario 06b failed assertion: tooltipVisible=$($r6b.Status.tooltipVisible)"
+    }
 } finally {
     # Restore original taskbar theme
     if ($null -ne $origLight) {

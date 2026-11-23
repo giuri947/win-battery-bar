@@ -169,29 +169,39 @@ std::optional<uint64_t> ExtractAnyMacFromInstanceId(const std::wstring& instance
     if (auto devMac = ExtractDevNodeMac(instanceId)) {
         return devMac;
     }
-    size_t lastSlash = instanceId.rfind(L'\\');
-    if (lastSlash == std::wstring::npos) return std::nullopt;
-    std::wstring tail = instanceId.substr(lastSlash + 1);
 
-    // Split by '&' and check segments (strip trailing "_...")
-    size_t pos = 0;
-    while (pos < tail.size()) {
-        size_t amp = tail.find(L'&', pos);
-        std::wstring part = (amp == std::wstring::npos) ? tail.substr(pos) : tail.substr(pos, amp - pos);
-        size_t under = part.find(L'_');
-        if (under != std::wstring::npos) {
-            // Could be "BLUETOOTHDEVICE_F5CFD77BCB0B" or "F5CFD77BCB0B_C00000000"
-            std::wstring left = part.substr(0, under);
-            std::wstring right = part.substr(under + 1);
-            uint64_t mac = 0;
-            if (ParseHex12(left, mac)) return mac;
-            if (ParseHex12(right, mac)) return mac;
-        } else {
-            uint64_t mac = 0;
-            if (ParseHex12(part, mac)) return mac;
+    auto scanSegment = [](const std::wstring& seg) -> std::optional<uint64_t> {
+        size_t pos = 0;
+        while (pos < seg.size()) {
+            size_t amp = seg.find(L'&', pos);
+            std::wstring part = (amp == std::wstring::npos) ? seg.substr(pos) : seg.substr(pos, amp - pos);
+            size_t tpos = 0;
+            while (tpos < part.size()) {
+                size_t under = part.find(L'_', tpos);
+                std::wstring tok = (under == std::wstring::npos) ? part.substr(tpos) : part.substr(tpos, under - tpos);
+                uint64_t mac = 0;
+                if (ParseHex12(tok, mac)) return mac;
+                if (under == std::wstring::npos) break;
+                tpos = under + 1;
+            }
+            if (amp == std::wstring::npos) break;
+            pos = amp + 1;
         }
-        if (amp == std::wstring::npos) break;
-        pos = amp + 1;
+        return std::nullopt;
+    };
+
+    size_t lastSlash = instanceId.rfind(L'\\');
+    if (lastSlash != std::wstring::npos) {
+        if (auto mac = scanSegment(instanceId.substr(lastSlash + 1))) {
+            return mac;
+        }
+        // Fallback for BTHLEDEVICE\{uuid}_DEV_VID&..._<MAC>\...
+        size_t firstSlash = instanceId.find(L'\\');
+        if (firstSlash != std::wstring::npos && firstSlash < lastSlash) {
+            if (auto mac = scanSegment(instanceId.substr(firstSlash + 1, lastSlash - firstSlash - 1))) {
+                return mac;
+            }
+        }
     }
     return std::nullopt;
 }
@@ -332,6 +342,7 @@ bool IsPhoneOrComputerCoD(uint32_t cod) {
 
 struct BleReadResult {
     bool skipDevice = false;
+    bool connectionStatusKnown = false;
     bool connected = false;
     std::optional<int> percent;
     std::optional<DeviceKind> kind;
@@ -374,6 +385,7 @@ BleReadResult ReadBleGattBattery(uint64_t addr) {
         };
 
         res.name = dev.Name().c_str();
+        res.connectionStatusKnown = true;
         res.connected = (dev.ConnectionStatus() == BluetoothConnectionStatus::Connected);
         if (!res.connected) {
             res.note = L"BLE not connected";
@@ -614,6 +626,10 @@ ScanResult ScanAll(bool includeLaptop, bool includeDisconnected) {
         return it->second;
     };
 
+    auto isValidContainerId = [](const std::wstring& cid) {
+        return !cid.empty() && cid != L"{00000000-0000-0000-0000-000000000000}";
+    };
+
     // 2. Classic Bluetooth (BTHENUM) via SetupAPI
     auto bthenumNodes = EnumeratePnpNodes(L"BTHENUM");
     diag << L"[BTHENUM] nodes=" << bthenumNodes.size() << L"\r\n";
@@ -624,7 +640,7 @@ ScanResult ScanAll(bool includeLaptop, bool includeDisconnected) {
         if (!devMac) continue;
         auto& c = ensureByMac(*devMac, L"bt");
         if (!n.friendlyName.empty()) c.name = n.friendlyName;
-        if (!n.containerId.empty()) {
+        if (isValidContainerId(n.containerId)) {
             c.containerId = n.containerId;
             containerToKey[n.containerId] = FormatMac(*devMac);
         }
@@ -679,16 +695,31 @@ ScanResult ScanAll(bool includeLaptop, bool includeDisconnected) {
     auto bthleDevNodes = EnumeratePnpNodes(L"BTHLEDEVICE");
     diag << L"[BTHLE] nodes=" << bthleNodes.size() << L" [BTHLEDEVICE] nodes=" << bthleDevNodes.size() << L"\r\n";
 
-    std::set<uint64_t> bleMacsToProbe;
+    std::map<uint64_t, std::wstring> bleMacsToProbe;
 
     for (const auto& n : bthleNodes) {
         auto devMac = ExtractDevNodeMac(n.instanceId);
         if (!devMac) continue;
-        auto& c = ensureByMac(*devMac, L"ble");
-        if (!n.friendlyName.empty()) c.name = n.friendlyName;
-        if (!n.containerId.empty()) {
-            c.containerId = n.containerId;
-            containerToKey[n.containerId] = FormatMac(*devMac);
+
+        std::wstring mapKey;
+        BtCandidate* candPtr = nullptr;
+        if (isValidContainerId(n.containerId)) {
+            auto cit = containerToKey.find(n.containerId);
+            if (cit != containerToKey.end() && byKey.count(cit->second)) {
+                mapKey = cit->second;
+                candPtr = &byKey[mapKey];
+            }
+        }
+        if (!candPtr) {
+            mapKey = FormatMac(*devMac);
+            candPtr = &ensureByMac(*devMac, L"ble");
+        }
+        auto& c = *candPtr;
+
+        if (!n.friendlyName.empty() && c.name.empty()) c.name = n.friendlyName;
+        if (isValidContainerId(n.containerId)) {
+            if (c.containerId.empty()) c.containerId = n.containerId;
+            containerToKey[n.containerId] = mapKey;
         }
         bool conn = n.isConnected.value_or(true);
         if (!n.isConnected.has_value() && n.devNodeStatus.has_value()) {
@@ -696,7 +727,7 @@ ScanResult ScanAll(bool includeLaptop, bool includeDisconnected) {
         }
         if (conn) {
             c.connected = true;
-            bleMacsToProbe.insert(*devMac);
+            bleMacsToProbe[*devMac] = mapKey;
         }
         if (n.batteryLevel.has_value()) {
             c.percent = *n.batteryLevel;
@@ -707,7 +738,7 @@ ScanResult ScanAll(bool includeLaptop, bool includeDisconnected) {
     for (const auto& n : bthleDevNodes) {
         if (!n.batteryLevel.has_value()) continue;
         BtCandidate* target = nullptr;
-        if (!n.containerId.empty()) {
+        if (isValidContainerId(n.containerId)) {
             auto cit = containerToKey.find(n.containerId);
             if (cit != containerToKey.end() && byKey.count(cit->second)) {
                 target = &byKey[cit->second];
@@ -730,7 +761,7 @@ ScanResult ScanAll(bool includeLaptop, bool includeDisconnected) {
     // 3b. HID fallback for BLE/BT HID devices exposing battery via ContainerId
     auto hidNodes = EnumeratePnpNodes(L"HID");
     for (const auto& n : hidNodes) {
-        if (!n.batteryLevel.has_value() || n.containerId.empty()) continue;
+        if (!n.batteryLevel.has_value() || !isValidContainerId(n.containerId)) continue;
         auto cit = containerToKey.find(n.containerId);
         if (cit != containerToKey.end() && byKey.count(cit->second)) {
             auto& target = byKey[cit->second];
@@ -742,8 +773,12 @@ ScanResult ScanAll(bool includeLaptop, bool includeDisconnected) {
     }
 
     // 4. Live BLE GATT Battery Service (0x180F / 0x2A19) via C++/WinRT
-    for (uint64_t mac : bleMacsToProbe) {
-        auto& c = ensureByMac(mac, L"ble");
+    for (const auto& probe : bleMacsToProbe) {
+        uint64_t mac = probe.first;
+        const std::wstring& mapKey = probe.second;
+        auto it = byKey.find(mapKey);
+        if (it == byKey.end()) continue;
+        auto& c = it->second;
         if (c.skip) continue;
         BleReadResult ble = ReadBleGattBattery(mac);
         diag << L"  BLE GATT " << FormatMac(mac) << L" (" << (ble.name.empty() ? c.name : ble.name)
@@ -755,15 +790,17 @@ ScanResult ScanAll(bool includeLaptop, bool includeDisconnected) {
             c.skip = true;
             continue;
         }
-        if (!ble.name.empty()) {
+        if (!ble.name.empty() && c.name.empty()) {
             c.name = ble.name;
         }
-        if (ble.kind.has_value()) {
+        if (ble.kind.has_value() && !c.kindFromHardware) {
             c.kind = *ble.kind;
             c.kindFromHardware = true;
         }
         if (ble.connected) {
             c.connected = true;
+        } else if (ble.connectionStatusKnown && c.key.rfind(L"ble:", 0) == 0) {
+            c.connected = false;
         }
         if (ble.percent.has_value()) {
             c.percent = *ble.percent;
@@ -831,10 +868,10 @@ std::vector<BatteryDevice> BuildDemoDevices(int preset) {
             DeviceKind::Headphones, 18, true, false, false, nowMs
         });
     } else if (preset == 1) {
-        // 4-device demo showing Full green, Amber warning, Mid green, Low red
+        // 4-device demo showing 100% Full green, Amber warning, Mid green, Low red
         list.push_back({
-            L"laptop", L"Laptop Battery", L"On Battery", L"4h 15m remaining",
-            DeviceKind::Laptop, 95, true, false, false, nowMs
+            L"laptop", L"Laptop Battery", L"AC Power", L"Fully charged",
+            DeviceKind::Laptop, 100, true, false, true, nowMs
         });
         list.push_back({
             L"ble:a1b2c3d4e5f6", L"Logitech Pebble M350", L"Bluetooth LE", L"Connected",

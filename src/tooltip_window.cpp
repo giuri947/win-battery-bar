@@ -106,10 +106,10 @@ void TooltipWindow::ShowForDevice(
     std::wstring pctText = (dev.percent >= 0) ? (std::to_wstring(dev.percent) + L"%") : L"--";
     std::wstring subtitle = dev.sourceLabel;
     if (!dev.extraStatus.empty()) {
-        if (!subtitle.empty()) subtitle += L"  \x00B7  ";
+        if (!subtitle.empty()) subtitle += L" \x00B7 ";
         subtitle += dev.extraStatus;
     }
-    std::wstring footer = FormatUpdatedAgo(dev.updatedTickMs) + L"  \x00B7  Click to refresh";
+    std::wstring footer = FormatUpdatedAgo(dev.updatedTickMs) + L" \x00B7 Click to refresh";
     RenderAndPosition(dev.name, pctText, subtitle, footer, dev.percent, dev.connected, dev.charging,
         anchorScreenRect, dpi, lightTheme);
 }
@@ -123,7 +123,7 @@ void TooltipWindow::ShowEmpty(
         L"WinBatteryBar",
         L"--",
         L"No Bluetooth battery devices connected",
-        L"Right-click for options  \x00B7  Click to scan",
+        L"Right-click for options \x00B7 Click to scan",
         -1, false, false, anchorScreenRect, dpi, lightTheme);
 }
 
@@ -144,8 +144,8 @@ void TooltipWindow::RenderAndPosition(
     using namespace Gdiplus;
 
     int shadowPad = ScI(6.0f, dpi);
-    int cardW = ScI(232.0f, dpi);
-    int cardH = ScI(84.0f, dpi);
+    int cardW = ScI(236.0f, dpi);
+    int cardH = ScI(88.0f, dpi);
     int w = cardW + shadowPad * 2;
     int h = cardH + shadowPad * 2;
 
@@ -194,8 +194,8 @@ void TooltipWindow::RenderAndPosition(
         // Card surface
         GraphicsPath card;
         AddRoundedRect(card, cx, cy, cw, ch, rad);
-        Color bgCol = lightTheme ? Color(248, 248, 249, 251) : Color(246, 30, 33, 40);
-        Color borderCol = lightTheme ? Color(200, 196, 202, 212) : Color(160, 74, 80, 92);
+        Color bgCol = lightTheme ? Color(250, 250, 251, 253) : Color(248, 28, 31, 38);
+        Color borderCol = lightTheme ? Color(210, 186, 194, 206) : Color(175, 76, 82, 96);
         SolidBrush bgBrush(bgCol);
         g.FillPath(&bgBrush, &card);
 
@@ -206,12 +206,12 @@ void TooltipWindow::RenderAndPosition(
         FontFamily fam(L"Segoe UI");
         Font titleFont(&fam, Sc(12.5f, dpi), FontStyleBold, UnitPixel);
         Font pctFont(&fam, Sc(13.0f, dpi), FontStyleBold, UnitPixel);
-        Font subFont(&fam, Sc(10.8f, dpi), FontStyleRegular, UnitPixel);
-        Font footFont(&fam, Sc(9.8f, dpi), FontStyleRegular, UnitPixel);
+        Font subFont(&fam, Sc(11.0f, dpi), FontStyleRegular, UnitPixel);
+        Font footFont(&fam, Sc(10.5f, dpi), FontStyleRegular, UnitPixel);
 
         Color textMain = lightTheme ? Color(255, 22, 25, 32) : Color(255, 244, 246, 250);
-        Color textSub  = lightTheme ? Color(255, 78, 84, 96) : Color(255, 188, 194, 206);
-        Color textFoot = lightTheme ? Color(255, 118, 124, 136) : Color(255, 138, 146, 160);
+        Color textSub  = lightTheme ? Color(255, 72, 78, 92) : Color(255, 196, 202, 214);
+        Color textFoot = lightTheme ? Color(255, 102, 110, 124) : Color(255, 160, 168, 182);
         Color accent = AccentForLevel(percent, connected, charging);
 
         SolidBrush bMain(textMain);
@@ -228,7 +228,7 @@ void TooltipWindow::RenderAndPosition(
         rightFmt.SetAlignment(StringAlignmentFar);
         rightFmt.SetFormatFlags(StringFormatFlagsNoWrap);
 
-        float pctBoxW = Sc(46.0f, dpi);
+        float pctBoxW = Sc(48.0f, dpi);
         RectF titleRect(cx + pad, cy + Sc(9.0f, dpi), cw - pad * 2.0f - pctBoxW, Sc(18.0f, dpi));
         RectF pctRect(cx + cw - pad - pctBoxW, cy + Sc(8.5f, dpi), pctBoxW, Sc(19.0f, dpi));
         g.DrawString(title.c_str(), -1, &titleFont, titleRect, &leftFmt, &bMain);
@@ -236,12 +236,12 @@ void TooltipWindow::RenderAndPosition(
 
         // Sleek progress bar track
         float barX = cx + pad;
-        float barY = cy + Sc(31.0f, dpi);
+        float barY = cy + Sc(32.0f, dpi);
         float barW = cw - pad * 2.0f;
         float barH = Sc(5.0f, dpi);
         GraphicsPath track;
         AddRoundedRect(track, barX, barY, barW, barH, barH * 0.5f);
-        SolidBrush trackBrush(lightTheme ? Color(255, 220, 224, 232) : Color(255, 52, 56, 66));
+        SolidBrush trackBrush(lightTheme ? Color(255, 218, 222, 232) : Color(255, 54, 58, 68));
         g.FillPath(&trackBrush, &track);
 
         if (percent > 0) {
@@ -252,13 +252,13 @@ void TooltipWindow::RenderAndPosition(
         }
 
         // Subtitle & footer
-        RectF subRect(cx + pad, cy + Sc(42.0f, dpi), cw - pad * 2.0f, Sc(16.0f, dpi));
-        RectF footRect(cx + pad, cy + Sc(60.0f, dpi), cw - pad * 2.0f, Sc(15.0f, dpi));
+        RectF subRect(cx + pad, cy + Sc(43.5f, dpi), cw - pad * 2.0f, Sc(16.0f, dpi));
+        RectF footRect(cx + pad, cy + Sc(62.5f, dpi), cw - pad * 2.0f, Sc(16.0f, dpi));
         g.DrawString(subtitle.c_str(), -1, &subFont, subRect, &leftFmt, &bSub);
         g.DrawString(footer.c_str(), -1, &footFont, footRect, &leftFmt, &bFoot);
     }
 
-    // Position right above (or below if top taskbar) the hovered capsule, clamped to monitor bounds
+    // Position cleanly above the taskbar top edge (or below if top taskbar), clamped to monitor bounds
     HMONITOR mon = MonitorFromRect(&anchorScreenRect, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi = {};
     mi.cbSize = sizeof(mi);
@@ -266,11 +266,11 @@ void TooltipWindow::RenderAndPosition(
 
     int anchorCenterX = (anchorScreenRect.left + anchorScreenRect.right) / 2;
     int px = anchorCenterX - w / 2;
-    int gap = ScI(6.0f, dpi);
+    int gap = ScI(12.0f, dpi);
     int py = anchorScreenRect.top - h + shadowPad - gap;
 
     if (py < mi.rcMonitor.top) {
-        // Taskbar is at top of screen: show below capsule
+        // Taskbar is at top of screen: show cleanly below taskbar edge
         py = anchorScreenRect.bottom - shadowPad + gap;
     }
 
