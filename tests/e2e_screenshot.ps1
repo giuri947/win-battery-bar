@@ -88,6 +88,17 @@ public static class WinCapture {
         return bmp;
     }
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassNameW(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+    public static IntPtr FindByClass(string cls) {
+        return FindWindowW(cls, null);
+    }
+
+    public static IntPtr FindChildByClass(IntPtr parent, IntPtr after, string cls) {
+        return FindWindowExW(parent, after, string.IsNullOrEmpty(cls) ? null : cls, null);
+    }
+
     public static void BroadcastThemeChange() {
         IntPtr res;
         SendMessageTimeoutW((IntPtr)0xFFFF, WM_SETTINGCHANGE, IntPtr.Zero, "ImmersiveColorSet", SMTO_ABORTIFHUNG, 2000, out res);
@@ -97,15 +108,33 @@ public static class WinCapture {
 
 [WinCapture]::SetProcessDPIAware() | Out-Null
 
+function Dump-ChildWindows([IntPtr]$parent, [string]$label) {
+    if ($parent -eq [IntPtr]::Zero) { return }
+    Write-Host "Children of ${label}:"
+    $child = [IntPtr]::Zero
+    while ($true) {
+        $child = [WinCapture]::FindChildByClass($parent, $child, $null)
+        if ($child -eq [IntPtr]::Zero) { break }
+        $sb = New-Object System.Text.StringBuilder 256
+        [WinCapture]::GetClassNameW($child, $sb, $sb.Capacity) | Out-Null
+        $rc = New-Object WinCapture+RECT
+        [WinCapture]::GetWindowRect($child, [ref]$rc) | Out-Null
+        Write-Host ("  [{0}] hwnd=0x{1:X} rect=({2},{3})-({4},{5}) W={6} H={7}" -f $sb.ToString(), $child.ToInt64(), $rc.Left, $rc.Top, $rc.Right, $rc.Bottom, ($rc.Right - $rc.Left), ($rc.Bottom - $rc.Top))
+    }
+}
+
 function Get-TaskbarGeometry {
-    $tb = [WinCapture]::FindWindowW("Shell_TrayWnd", $null)
+    $tb = [WinCapture]::FindByClass("Shell_TrayWnd")
     if ($tb -eq [IntPtr]::Zero) { return $null }
-    $rebar = [WinCapture]::FindWindowExW($tb, [IntPtr]::Zero, "ReBarWindow32", $null)
+    $rebar = [WinCapture]::FindChildByClass($tb, [IntPtr]::Zero, "ReBarWindow32")
     $taskList = [IntPtr]::Zero
     if ($rebar -ne [IntPtr]::Zero) {
-        $taskList = [WinCapture]::FindWindowExW($rebar, [IntPtr]::Zero, "MSTaskSwWClass", $null)
+        $taskList = [WinCapture]::FindChildByClass($rebar, [IntPtr]::Zero, "MSTaskSwWClass")
+        if ($taskList -eq [IntPtr]::Zero) {
+            $taskList = [WinCapture]::FindChildByClass($rebar, [IntPtr]::Zero, "MSTaskListWClass")
+        }
     }
-    $tray = [WinCapture]::FindWindowExW($tb, [IntPtr]::Zero, "TrayNotifyWnd", $null)
+    $tray = [WinCapture]::FindChildByClass($tb, [IntPtr]::Zero, "TrayNotifyWnd")
 
     $rTb = New-Object WinCapture+RECT
     $rRebar = New-Object WinCapture+RECT
@@ -166,21 +195,24 @@ function Stop-WidgetCleanly($proc) {
     $w = [IntPtr]::Zero
     if ($geo) {
         if ($geo.ReBarHwnd -ne [IntPtr]::Zero) {
-            $w = [WinCapture]::FindWindowExW($geo.ReBarHwnd, [IntPtr]::Zero, "WinBatteryBarTaskbarWidget", $null)
+            $w = [WinCapture]::FindChildByClass($geo.ReBarHwnd, [IntPtr]::Zero, "WinBatteryBarTaskbarWidget")
         }
         if ($w -eq [IntPtr]::Zero) {
-            $w = [WinCapture]::FindWindowExW($geo.TaskbarHwnd, [IntPtr]::Zero, "WinBatteryBarTaskbarWidget", $null)
+            $w = [WinCapture]::FindChildByClass($geo.TaskbarHwnd, [IntPtr]::Zero, "WinBatteryBarTaskbarWidget")
         }
     }
     if ($w -eq [IntPtr]::Zero) {
-        $w = [WinCapture]::FindWindowW("WinBatteryBarTaskbarWidget", $null)
+        $w = [WinCapture]::FindByClass("WinBatteryBarTaskbarWidget")
     }
     if ($w -ne [IntPtr]::Zero) {
         [WinCapture]::PostMessageW($w, [WinCapture]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+    } else {
+        Write-Warning "Stop-WidgetCleanly: could not find WinBatteryBarTaskbarWidget HWND!"
     }
     if ($proc -and !$proc.HasExited) {
         $proc.WaitForExit(4000) | Out-Null
         if (!$proc.HasExited) {
+            Write-Warning "Stop-WidgetCleanly: process did not exit on WM_CLOSE, killing!"
             $proc.Kill()
             $proc.WaitForExit(2000) | Out-Null
         }
