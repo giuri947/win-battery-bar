@@ -10,7 +10,7 @@ A lightweight, native **Windows 10 taskbar BatteryBar** for your **Laptop**, **B
   - **Bluetooth Low Energy (BLE)** mice/keyboards/earbuds via WinRT GATT Battery Service (`0x180F` / `0x2A19`) + SetupAPI fallback.
   - **Laptop Battery** via `GetSystemPowerStatus` (with charging indicator and remaining time in hover tooltip — can also be hidden if you already run BatteryBar for your laptop).
 - **Clean Native Visuals**: BatteryBar-style color-coded capsules (green / amber / red), crisp custom vector device icons, Per-Monitor V2 DPI scaling, dark & light taskbar support, and floating hover tooltip cards.
-- **Zero Dependencies**: Single standalone static-CRT `.exe` (~200 KB), ~3 MB RAM, 0% idle CPU, no installer or Admin rights needed.
+- **Zero Dependencies**: Single standalone static-CRT `.exe` (~475 KB), ~3 MB RAM, 0% idle CPU, no installer or Admin rights needed.
 
 ## Usage
 1. Download `WinBatteryBar.exe` from the **Releases** page.
