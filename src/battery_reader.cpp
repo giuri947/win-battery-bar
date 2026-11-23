@@ -855,9 +855,11 @@ ScanResult ScanAll(bool includeLaptop, bool includeDisconnected) {
         dev.id = c.key;
         dev.name = c.name.empty() ? L"Bluetooth Device" : StripProfileSuffix(c.name);
         dev.kind = c.kindFromHardware ? c.kind : ClassifyByName(dev.name);
-        // Refine generic Bluetooth classification if hardware class was generic
+        // Refine generic Bluetooth/Headphones classification once final name is resolved
         if (dev.kind == DeviceKind::Bluetooth) {
             dev.kind = ClassifyByName(dev.name);
+        } else if (dev.kind == DeviceKind::Headphones && ClassifyByName(dev.name) == DeviceKind::Earbuds) {
+            dev.kind = DeviceKind::Earbuds;
         }
         dev.percent = std::clamp(c.percent, 0, 100);
         dev.connected = c.connected;

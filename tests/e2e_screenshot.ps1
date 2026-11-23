@@ -245,10 +245,19 @@ function Run-DemoScenario([string]$name, [string[]]$argsList) {
         Write-Warning "Status file missing for $name!"
     }
 
+    $hostDuring = [WinCapture]::FindByClass("WinBatteryBarHostWnd")
+    if ($hostDuring -eq [IntPtr]::Zero) {
+        throw "Scenario $name failed assertion: WinBatteryBarHostWnd top-level host window not found!"
+    }
+
     Capture-Scenario $name
     $widthDuring = if ($geo) { $geo.TaskListWidth } else { -1 }
 
     Stop-WidgetCleanly $proc
+    $hostAfter = [WinCapture]::FindByClass("WinBatteryBarHostWnd")
+    if ($hostAfter -ne [IntPtr]::Zero) {
+        throw "Scenario $name failed assertion: WinBatteryBarHostWnd leaked after exit!"
+    }
     return [PSCustomObject]@{
         Status = $status
         TaskListWidthDuring = $widthDuring

@@ -282,9 +282,12 @@ void WidgetWindow::ApplyFilteredDevices() {
 }
 
 void WidgetWindow::UpdateDockAndRedraw(bool forceReposition) {
-    // If Explorer restarted and destroyed our child window, recreate & re-attach cleanly
+    // If Explorer restarted and destroyed our child window, wait for new taskbar before recreating
     if (!m_hwnd || !IsWindow(m_hwnd)) {
         m_hwnd = nullptr;
+        if (!FindWindowW(L"Shell_TrayWnd", nullptr)) {
+            return;
+        }
         if (!CreateWidgetHwnd()) {
             return;
         }
@@ -443,8 +446,9 @@ void WidgetWindow::ShowContextMenu(POINT screenPt) {
     }
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING | (m_settings.autoStart ? MF_CHECKED : MF_UNCHECKED),
-        kCmdAutoStart, L"Start with Windows");
+    UINT autoStartFlags = MF_STRING | (m_settings.autoStart ? MF_CHECKED : MF_UNCHECKED);
+    if (m_opts.demoMode) autoStartFlags |= MF_GRAYED;
+    AppendMenuW(menu, autoStartFlags, kCmdAutoStart, L"Start with Windows");
     AppendMenuW(menu, MF_STRING, kCmdCopyDiagnostics, L"Copy Diagnostics");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kCmdExit, L"Exit WinBatteryBar");
@@ -493,10 +497,12 @@ void WidgetWindow::ShowContextMenu(POINT screenPt) {
         SaveSettingsIfAllowed();
         UpdateDockAndRedraw(true);
     } else if (cmd == kCmdAutoStart) {
-        bool target = !m_settings.autoStart;
-        if (SettingsStore::SetAutoStartEnabled(target)) {
-            m_settings.autoStart = target;
-            SaveSettingsIfAllowed();
+        if (!m_opts.demoMode) {
+            bool target = !m_settings.autoStart;
+            if (SettingsStore::SetAutoStartEnabled(target)) {
+                m_settings.autoStart = target;
+                SaveSettingsIfAllowed();
+            }
         }
     } else if (cmd == kCmdCopyDiagnostics) {
         CopyDiagnosticsToClipboard();
@@ -588,12 +594,12 @@ LRESULT CALLBACK WidgetWindow::StaticHostWndProc(HWND hwnd, UINT msg, WPARAM wp,
     }
 
     if (self) {
-        return self->HostWndProc(msg, wp, lp);
+        return self->HostWndProc(hwnd, msg, wp, lp);
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-LRESULT WidgetWindow::HostWndProc(UINT msg, WPARAM wp, LPARAM lp) {
+LRESULT WidgetWindow::HostWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (m_taskbarCreatedMsg != 0 && msg == m_taskbarCreatedMsg) {
         // Explorer restarted: recreate child if destroyed, otherwise re-attach cleanly to the new taskbar
         if (!m_hwnd || !IsWindow(m_hwnd)) {
@@ -612,11 +618,11 @@ LRESULT WidgetWindow::HostWndProc(UINT msg, WPARAM wp, LPARAM lp) {
             UpdateDockAndRedraw(false);
             WriteStatusFile();
         } else if (wp == kTimerFlashEnd) {
-            KillTimer(m_hostHwnd, kTimerFlashEnd);
+            KillTimer(hwnd, kTimerFlashEnd);
             m_refreshFlash = false;
             RedrawOnly();
         } else if (wp == kTimerDebounce) {
-            KillTimer(m_hostHwnd, kTimerDebounce);
+            KillTimer(hwnd, kTimerDebounce);
             TriggerScanNow(false);
         }
         return 0;
@@ -640,13 +646,13 @@ LRESULT WidgetWindow::HostWndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_POWERBROADCAST:
         if (wp == PBT_APMPOWERSTATUSCHANGE || wp == PBT_APMRESUMEAUTOMATIC) {
-            SetTimer(m_hostHwnd, kTimerDebounce, 500, nullptr);
+            SetTimer(hwnd, kTimerDebounce, 500, nullptr);
         }
         return TRUE;
 
     case WM_DEVICECHANGE:
         if (wp == DBT_DEVNODES_CHANGED || wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
-            SetTimer(m_hostHwnd, kTimerDebounce, 1200, nullptr);
+            SetTimer(hwnd, kTimerDebounce, 1200, nullptr);
         }
         return TRUE;
 
@@ -666,11 +672,18 @@ LRESULT WidgetWindow::HostWndProc(UINT msg, WPARAM wp, LPARAM lp) {
         PostQuitMessage(0);
         return 0;
 
+    case WM_NCDESTROY:
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        if (m_hostHwnd == hwnd) {
+            m_hostHwnd = nullptr;
+        }
+        return DefWindowProcW(hwnd, msg, wp, lp);
+
     default:
         break;
     }
 
-    return DefWindowProcW(m_hostHwnd, msg, wp, lp);
+    return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 LRESULT CALLBACK WidgetWindow::StaticWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -685,12 +698,12 @@ LRESULT CALLBACK WidgetWindow::StaticWndProc(HWND hwnd, UINT msg, WPARAM wp, LPA
     }
 
     if (self) {
-        return self->WndProc(msg, wp, lp);
+        return self->WndProc(hwnd, msg, wp, lp);
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-LRESULT WidgetWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
+LRESULT WidgetWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
@@ -700,12 +713,12 @@ LRESULT WidgetWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_PAINT: {
         PAINTSTRUCT ps = {};
-        HDC hdc = BeginPaint(m_hwnd, &ps);
+        HDC hdc = BeginPaint(hwnd, &ps);
         if (m_useColorKeyFallback && hdc) {
             bool light = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
             Renderer::RenderToPaintDC(hdc, m_visibleDevices, m_layout, m_metrics.dpi, light, m_hoveredIndex, m_refreshFlash);
         }
-        EndPaint(m_hwnd, &ps);
+        EndPaint(hwnd, &ps);
         return 0;
     }
 
@@ -714,7 +727,7 @@ LRESULT WidgetWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             TRACKMOUSEEVENT tme = {};
             tme.cbSize = sizeof(tme);
             tme.dwFlags = TME_LEAVE;
-            tme.hwndTrack = m_hwnd;
+            tme.hwndTrack = hwnd;
             TrackMouseEvent(&tme);
             m_trackingMouse = true;
         }
@@ -759,13 +772,20 @@ LRESULT WidgetWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_DESTROY:
         m_tooltip.Hide();
-        m_dock.DetachAndRestore(m_hwnd);
-        m_hwnd = nullptr;
+        // Restore tasklist without calling SetParent on a window currently being destroyed
+        m_dock.DetachAndRestore(nullptr);
         return 0;
+
+    case WM_NCDESTROY:
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        if (m_hwnd == hwnd) {
+            m_hwnd = nullptr;
+        }
+        return DefWindowProcW(hwnd, msg, wp, lp);
 
     default:
         break;
     }
 
-    return DefWindowProcW(m_hwnd, msg, wp, lp);
+    return DefWindowProcW(hwnd, msg, wp, lp);
 }

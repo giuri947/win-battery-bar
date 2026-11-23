@@ -34,10 +34,10 @@ public:
 
 private:
     static LRESULT CALLBACK StaticHostWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
-    LRESULT HostWndProc(UINT msg, WPARAM wp, LPARAM lp);
+    LRESULT HostWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
     static LRESULT CALLBACK StaticWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
-    LRESULT WndProc(UINT msg, WPARAM wp, LPARAM lp);
+    LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
     bool CreateWidgetHwnd();
     void SaveSettingsIfAllowed();

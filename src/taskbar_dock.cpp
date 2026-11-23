@@ -168,6 +168,7 @@ void TaskbarDock::DetachAndRestore(HWND widgetHwnd) {
 bool TaskbarDock::IsTaskbarAlive() const {
     if (!m_hTaskbar || !IsWindow(m_hTaskbar)) return false;
     if (m_attached && m_hParent && !IsWindow(m_hParent)) return false;
+    if (m_attached && !m_isWin11 && m_hParent == m_hReBar && m_hTaskList && !IsWindow(m_hTaskList)) return false;
     return true;
 }
 
