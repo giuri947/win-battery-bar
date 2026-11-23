@@ -54,7 +54,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Continue"
           $log = "$PWD\ci_out\e2e.log"
-          .\tests\e2e_screenshot.ps1 -ExePath "$PWD\build\Release\WinBatteryBar.exe" -OutDir "$PWD\ci_out\screenshots" *>&1 | Tee-Object -FilePath $log
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PWD\tests\e2e_screenshot.ps1" -ExePath "$PWD\build\Release\WinBatteryBar.exe" -OutDir "$PWD\ci_out\screenshots" 2>&1 | Tee-Object -FilePath $log
           exit $LASTEXITCODE
 
       - name: Publish logs, screenshots, and binary to ci-results branch

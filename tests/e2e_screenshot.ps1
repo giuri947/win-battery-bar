@@ -157,7 +157,7 @@ function Capture-Scenario([string]$name, [int]$cropWidth = 680, [int]$cropHeight
 
     $crop.Dispose()
     $full.Dispose()
-    Write-Host "Captured $name (${bounds.Width}x${bounds.Height}, crop ${cw}x${ch})"
+    Write-Host "Captured $name ($($bounds.Width)x$($bounds.Height), crop ${cw}x${ch})"
 }
 
 function Stop-WidgetCleanly($proc) {
@@ -288,21 +288,29 @@ if (-not $r5.Status -or $r5.Status.deviceCount -ne 2) {
 # Scenario 6: Light Windows 10 taskbar theme preview
 $persKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 if (!(Test-Path $persKey)) { New-Item -Path $persKey -Force | Out-Null }
-$origLight = (Get-ItemProperty -Path $persKey -Name SystemUsesLightTheme -ErrorAction SilentlyContinue).SystemUsesLightTheme
-Set-ItemProperty -Path $persKey -Name SystemUsesLightTheme -Type DWord -Value 1
-[WinCapture]::BroadcastThemeChange()
-Start-Sleep -Milliseconds 1200
+$origLight = $null
+try {
+    $origLight = (Get-ItemProperty -Path $persKey -Name SystemUsesLightTheme -ErrorAction SilentlyContinue).SystemUsesLightTheme
+} catch {}
+try {
+    Set-ItemProperty -Path $persKey -Name SystemUsesLightTheme -Type DWord -Value 1
+    [WinCapture]::BroadcastThemeChange()
+    Start-Sleep -Milliseconds 1200
 
-$r6 = Run-DemoScenario "06_demo_light_theme" @("--demo", "--demo-set", "0", "--demo-light")
-
-# Restore original taskbar theme
-if ($null -ne $origLight) {
-    Set-ItemProperty -Path $persKey -Name SystemUsesLightTheme -Type DWord -Value $origLight
-} else {
-    Set-ItemProperty -Path $persKey -Name SystemUsesLightTheme -Type DWord -Value 0
+    $r6 = Run-DemoScenario "06_demo_light_theme" @("--demo", "--demo-set", "0", "--demo-light")
+    if (-not $r6.Status -or -not $r6.Status.embedded -or -not $r6.Status.renderOk) {
+        throw "Scenario 06 failed assertion: embedded=$($r6.Status.embedded) renderOk=$($r6.Status.renderOk)"
+    }
+} finally {
+    # Restore original taskbar theme
+    if ($null -ne $origLight) {
+        Set-ItemProperty -Path $persKey -Name SystemUsesLightTheme -Type DWord -Value $origLight
+    } else {
+        Set-ItemProperty -Path $persKey -Name SystemUsesLightTheme -Type DWord -Value 0
+    }
+    [WinCapture]::BroadcastThemeChange()
+    Start-Sleep -Milliseconds 800
 }
-[WinCapture]::BroadcastThemeChange()
-Start-Sleep -Milliseconds 800
 
 # Scenario 7: Real mode smoke test (actual SetupAPI + WinRT BLE + GetSystemPowerStatus scan)
 $r7 = Run-DemoScenario "07_real_mode_smoke" @()
