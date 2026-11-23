@@ -1,0 +1,294 @@
+Baseline Taskbar: (0,728)-(1024,768) ReBar: (414,728)-(835,768) MSTaskSwWClass W=419 Tray: (835,728)-(1024,768)
+Captured 01_before_taskbar (1024x768, crop 680x160)
+Launching 02_demo_3dev_dark : D:\a\win-battery-bar\win-battery-bar\build\Release\WinBatteryBar.exe --demo --demo-set 0 --status-file D:\a\win-battery-bar\win-battery-bar\ci_out\screenshots\02_demo_3dev_dark_status.json
+Status (02_demo_3dev_dark):
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": false,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "full",
+  "showNetwork": false,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 236,
+  "height": 28,
+  "screenRect": [597, 734, 833, 762],
+  "deviceCount": 3,
+  "tileCount": 3,
+  "tooltipVisible": false,
+  "settingsVisible": false
+}
+
+Captured 02_demo_3dev_dark (1024x768, crop 680x160)
+After Scenario 02 exit: MSTaskSwWClass W=419 (baseline=419)
+Launching 03_demo_hover_tooltip : D:\a\win-battery-bar\win-battery-bar\build\Release\WinBatteryBar.exe --demo --demo-set 0 --demo-hover 2 --status-file D:\a\win-battery-bar\win-battery-bar\ci_out\screenshots\03_demo_hover_tooltip_status.json
+Status (03_demo_hover_tooltip):
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": false,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "full",
+  "showNetwork": false,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 236,
+  "height": 28,
+  "screenRect": [597, 734, 833, 762],
+  "deviceCount": 3,
+  "tileCount": 3,
+  "tooltipVisible": true,
+  "settingsVisible": false
+}
+
+Captured 03_demo_hover_tooltip (1024x768, crop 680x160)
+Launching 04_demo_4dev_states : D:\a\win-battery-bar\win-battery-bar\build\Release\WinBatteryBar.exe --demo --demo-set 1 --status-file D:\a\win-battery-bar\win-battery-bar\ci_out\screenshots\04_demo_4dev_states_status.json
+Status (04_demo_4dev_states):
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": false,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "full",
+  "showNetwork": false,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 314,
+  "height": 28,
+  "screenRect": [519, 734, 833, 762],
+  "deviceCount": 4,
+  "tileCount": 4,
+  "tooltipVisible": false,
+  "settingsVisible": false
+}
+
+Captured 04_demo_4dev_states (1024x768, crop 680x160)
+Launching 05_demo_bt_compact : D:\a\win-battery-bar\win-battery-bar\build\Release\WinBatteryBar.exe --demo --demo-set 2 --demo-compact --status-file D:\a\win-battery-bar\win-battery-bar\ci_out\screenshots\05_demo_bt_compact_status.json
+Status (05_demo_bt_compact):
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": false,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "compact",
+  "showNetwork": false,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 141,
+  "height": 26,
+  "screenRect": [692, 735, 833, 761],
+  "deviceCount": 2,
+  "tileCount": 2,
+  "tooltipVisible": false,
+  "settingsVisible": false
+}
+
+Captured 05_demo_bt_compact (1024x768, crop 680x160)
+Launching 09_demo_ultra_net_dark : D:\a\win-battery-bar\win-battery-bar\build\Release\WinBatteryBar.exe --demo --demo-set 0 --demo-ultra --demo-net --status-file D:\a\win-battery-bar\win-battery-bar\ci_out\screenshots\09_demo_ultra_net_dark_status.json
+Status (09_demo_ultra_net_dark):
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": false,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "ultra",
+  "showNetwork": true,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 142,
+  "height": 30,
+  "screenRect": [691, 733, 833, 763],
+  "deviceCount": 3,
+  "tileCount": 4,
+  "tooltipVisible": false,
+  "settingsVisible": false
+}
+
+Captured 09_demo_ultra_net_dark (1024x768, crop 680x160)
+Launching 10_demo_ultra_10pct_grid : D:\a\win-battery-bar\win-battery-bar\build\Release\WinBatteryBar.exe --demo --demo-set 3 --demo-ultra --status-file D:\a\win-battery-bar\win-battery-bar\ci_out\screenshots\10_demo_ultra_10pct_grid_status.json
+Status (10_demo_ultra_10pct_grid):
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": false,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "ultra",
+  "showNetwork": false,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 311,
+  "height": 30,
+  "screenRect": [522, 733, 833, 763],
+  "deviceCount": 11,
+  "tileCount": 11,
+  "tooltipVisible": false,
+  "settingsVisible": false
+}
+
+Captured 10_demo_ultra_10pct_grid (1024x768, crop 680x160)
+Launching 11_demo_net_tooltip : D:\a\win-battery-bar\win-battery-bar\build\Release\WinBatteryBar.exe --demo --demo-set 0 --demo-net --demo-hover 0 --status-file D:\a\win-battery-bar\win-battery-bar\ci_out\screenshots\11_demo_net_tooltip_status.json
+Status (11_demo_net_tooltip):
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": false,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "full",
+  "showNetwork": true,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 316,
+  "height": 28,
+  "screenRect": [517, 734, 833, 762],
+  "deviceCount": 3,
+  "tileCount": 4,
+  "tooltipVisible": true,
+  "settingsVisible": false
+}
+
+Captured 11_demo_net_tooltip (1024x768, crop 680x160)
+Launching 12_demo_settings_dark : D:\a\win-battery-bar\win-battery-bar\build\Release\WinBatteryBar.exe --demo --demo-set 0 --demo-ultra --demo-net --demo-settings --status-file D:\a\win-battery-bar\win-battery-bar\ci_out\screenshots\12_demo_settings_dark_status.json
+Status (12_demo_settings_dark):
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": false,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "ultra",
+  "showNetwork": true,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 142,
+  "height": 30,
+  "screenRect": [691, 733, 833, 763],
+  "deviceCount": 3,
+  "tileCount": 4,
+  "tooltipVisible": false,
+  "settingsVisible": true
+}
+
+Captured 12_demo_settings_dark (1024x768, crop 560x620)
+Launching 06_demo_light_theme : D:\a\win-battery-bar\win-battery-bar\build\Release\WinBatteryBar.exe --demo --demo-set 0 --demo-light --status-file D:\a\win-battery-bar\win-battery-bar\ci_out\screenshots\06_demo_light_theme_status.json
+Status (06_demo_light_theme):
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": true,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "full",
+  "showNetwork": false,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 236,
+  "height": 28,
+  "screenRect": [597, 734, 833, 762],
+  "deviceCount": 3,
+  "tileCount": 3,
+  "tooltipVisible": false,
+  "settingsVisible": false
+}
+
+Captured 06_demo_light_theme (1024x768, crop 680x160)
+Launching 06b_demo_light_tooltip : D:\a\win-battery-bar\win-battery-bar\build\Release\WinBatteryBar.exe --demo --demo-set 0 --demo-light --demo-hover 1 --status-file D:\a\win-battery-bar\win-battery-bar\ci_out\screenshots\06b_demo_light_tooltip_status.json
+Status (06b_demo_light_tooltip):
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": true,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "full",
+  "showNetwork": false,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 236,
+  "height": 28,
+  "screenRect": [597, 734, 833, 762],
+  "deviceCount": 3,
+  "tileCount": 3,
+  "tooltipVisible": true,
+  "settingsVisible": false
+}
+
+Captured 06b_demo_light_tooltip (1024x768, crop 680x160)
+Launching 13_demo_settings_light : D:\a\win-battery-bar\win-battery-bar\build\Release\WinBatteryBar.exe --demo --demo-set 0 --demo-ultra --demo-net --demo-light --demo-settings --status-file D:\a\win-battery-bar\win-battery-bar\ci_out\screenshots\13_demo_settings_light_status.json
+Status (13_demo_settings_light):
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": true,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "ultra",
+  "showNetwork": true,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 142,
+  "height": 30,
+  "screenRect": [691, 733, 833, 763],
+  "deviceCount": 3,
+  "tileCount": 4,
+  "tooltipVisible": false,
+  "settingsVisible": true
+}
+
+Captured 13_demo_settings_light (1024x768, crop 560x620)
+Launching 07_real_mode_smoke : D:\a\win-battery-bar\win-battery-bar\build\Release\WinBatteryBar.exe --status-file D:\a\win-battery-bar\win-battery-bar\ci_out\screenshots\07_real_mode_smoke_status.json
+Status (07_real_mode_smoke):
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": false,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "full",
+  "showNetwork": false,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 66,
+  "height": 28,
+  "screenRect": [767, 734, 833, 762],
+  "deviceCount": 0,
+  "tileCount": 1,
+  "tooltipVisible": false,
+  "settingsVisible": false
+}
+
+Captured 07_real_mode_smoke (1024x768, crop 680x160)
+Captured 08_after_exit_restore (1024x768, crop 680x160)
+Final restored MSTaskSwWClass W=419 (baseline=419)
+ALL E2E ASSERTIONS AND SCREENSHOTS PASSED!

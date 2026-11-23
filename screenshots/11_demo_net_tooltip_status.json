@@ -1,0 +1,20 @@
+{
+  "embedded": true,
+  "isWin11": false,
+  "horizontal": true,
+  "lightTheme": false,
+  "dpi": 96,
+  "taskbarThickness": 40,
+  "displayStyle": "full",
+  "showNetwork": true,
+  "renderMode": "ulw",
+  "renderOk": true,
+  "renderError": 0,
+  "width": 316,
+  "height": 28,
+  "screenRect": [517, 734, 833, 762],
+  "deviceCount": 3,
+  "tileCount": 4,
+  "tooltipVisible": true,
+  "settingsVisible": false
+}
