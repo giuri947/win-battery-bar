@@ -18,7 +18,7 @@ enum class DeviceKind : int {
 enum class DisplayStyle : int {
     Full = 0,         // Classic 72x24 BatteryBar capsules (icon + %)
     Compact = 1,      // Tighter 64x22 BatteryBar capsules
-    UltraCompact = 2  // Very compact 28x26 icon + 10%-step mini battery bar
+    UltraCompact = 2  // Very compact 25x26 icon + 10%-step mini battery bar
 };
 
 enum class NetUnitMode : int {

@@ -329,7 +329,8 @@ void DrawUltraCompactBatteryTile(
     float innerH = std::max(1.5f, barH - barInset * 2.0f);
 
     if (dev.percent >= 0 && steps10 > 0) {
-        float fillW = innerW * (static_cast<float>(steps10) / 10.0f);
+        float fillW = std::max(Sc(2.2f, dpi), innerW * (static_cast<float>(steps10) / 10.0f));
+        fillW = std::min(innerW, fillW);
         Color topCol, botCol;
         GetFillColors(dev, params.lowBatteryThreshold, topCol, botCol);
 
@@ -642,7 +643,10 @@ void DrawDeviceIcon(
         }
     };
 
-    drawIconPass(shadowPen, shadowBrush, shadowCol, 0.0f, 0.75f);
+    bool brightIcon = (static_cast<int>(color.GetR()) + static_cast<int>(color.GetG()) + static_cast<int>(color.GetB())) >= 384;
+    if (brightIcon) {
+        drawIconPass(shadowPen, shadowBrush, shadowCol, 0.0f, 0.75f);
+    }
     drawIconPass(pen, brush, color, 0.0f, 0.0f);
 
     // Crisp bright charging lightning bolt inside laptop screen when charging
@@ -697,7 +701,7 @@ WidgetLayout ComputeLayout(
         baseTileH = 26.0f;
         gap = 3.0f;
         padX = 3.0f;
-        netW = 58.0f;
+        netW = 52.0f;
     }
 
     int tileW = ScI(baseTileW, dpi);
