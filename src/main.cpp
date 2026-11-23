@@ -65,7 +65,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         }
     }
 
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     Renderer::InitGdiPlus();
 
     {
@@ -80,7 +80,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     }
 
     Renderer::ShutdownGdiPlus();
-    CoUninitialize();
+    if (SUCCEEDED(hrCo)) {
+        CoUninitialize();
+    }
     if (hMutex) {
         ReleaseMutex(hMutex);
         CloseHandle(hMutex);

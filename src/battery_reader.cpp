@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <setupapi.h>
+#include <cfgmgr32.h>
 #include <devpropdef.h>
 
 #include <winrt/Windows.Foundation.h>
@@ -19,7 +20,6 @@
 #include <iterator>
 #include <map>
 #include <optional>
-#include <set>
 #include <sstream>
 #include <unordered_map>
 
@@ -67,7 +67,7 @@ constexpr DEVPROPKEY kPkeyDevNodeStatus = {
     2
 };
 
-constexpr uint32_t kDnDeviceDisconnected = 0x02000000; // DN_NEEDS_LOCKING / DN_DEVICE_DISCONNECTED
+constexpr uint32_t kDnDeviceDisconnected = DN_DEVICE_DISCONNECTED;
 
 std::wstring ToLower(const std::wstring& s) {
     std::wstring out = s;
@@ -221,7 +221,12 @@ std::optional<std::vector<uint8_t>> ReadDevPropBytes(
 {
     DEVPROPTYPE propType = 0;
     DWORD required = 0;
-    SetupDiGetDevicePropertyW(devInfo, &devData, &key, &propType, nullptr, 0, &required, 0);
+    SetLastError(0);
+    if (!SetupDiGetDevicePropertyW(devInfo, &devData, &key, &propType, nullptr, 0, &required, 0) &&
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+    {
+        return std::nullopt;
+    }
     if (required == 0 || required > 4096) {
         return std::nullopt;
     }
@@ -432,51 +437,54 @@ BleReadResult ReadBleGattBattery(uint64_t addr) {
             }
         }
         if (svcResult && svcResult.Status() == GattCommunicationStatus::Success && svcResult.Services().Size() > 0) {
-            auto svc = svcResult.Services().GetAt(0);
-            GattCharacteristicsResult charResult = nullptr;
-            auto charOp = svc.GetCharacteristicsForUuidAsync(
-                GattCharacteristicUuids::BatteryLevel(), BluetoothCacheMode::Cached);
-            if (WaitAsyncCompleted(charOp, 4)) {
-                charResult = charOp.GetResults();
-            }
-            if (!charResult || charResult.Status() != GattCommunicationStatus::Success || charResult.Characteristics().Size() == 0) {
-                auto charUncachedOp = svc.GetCharacteristicsForUuidAsync(
-                    GattCharacteristicUuids::BatteryLevel(), BluetoothCacheMode::Uncached);
-                if (WaitAsyncCompleted(charUncachedOp, 4)) {
-                    charResult = charUncachedOp.GetResults();
-                }
-            }
-            if (charResult && charResult.Status() == GattCommunicationStatus::Success && charResult.Characteristics().Size() > 0) {
-                auto ch = charResult.Characteristics().GetAt(0);
-                // Prefer Uncached for fresh reading; fall back to Cached if sleepy mouse didn't wake
-                GattReadResult valResult = nullptr;
-                auto valOp = ch.ReadValueAsync(BluetoothCacheMode::Uncached);
-                if (WaitAsyncCompleted(valOp, 4)) {
-                    valResult = valOp.GetResults();
-                }
-                if (!valResult || valResult.Status() != GattCommunicationStatus::Success) {
-                    auto valCachedOp = ch.ReadValueAsync(BluetoothCacheMode::Cached);
-                    if (WaitAsyncCompleted(valCachedOp, 4)) {
-                        valResult = valCachedOp.GetResults();
-                    }
-                }
-                if (valResult && valResult.Status() == GattCommunicationStatus::Success &&
-                    valResult.Value() && valResult.Value().Length() >= 1)
-                {
-                    auto reader = DataReader::FromBuffer(valResult.Value());
-                    uint8_t lvl = reader.ReadByte();
-                    if (lvl <= 100) {
-                        res.percent = static_cast<int>(lvl);
-                        res.note = L"GATT 0x180F/0x2A19";
-                    }
-                } else {
-                    res.note = L"GATT read failed";
-                }
-            } else {
-                res.note = L"No BatteryLevel characteristic";
-            }
+            bool foundChar = false;
             for (uint32_t i = 0; i < svcResult.Services().Size(); ++i) {
-                try { svcResult.Services().GetAt(i).Close(); } catch (...) {}
+                auto svc = svcResult.Services().GetAt(i);
+                if (!res.percent.has_value()) {
+                    GattCharacteristicsResult charResult = nullptr;
+                    auto charOp = svc.GetCharacteristicsForUuidAsync(
+                        GattCharacteristicUuids::BatteryLevel(), BluetoothCacheMode::Cached);
+                    if (WaitAsyncCompleted(charOp, 4)) {
+                        charResult = charOp.GetResults();
+                    }
+                    if (!charResult || charResult.Status() != GattCommunicationStatus::Success || charResult.Characteristics().Size() == 0) {
+                        auto charUncachedOp = svc.GetCharacteristicsForUuidAsync(
+                            GattCharacteristicUuids::BatteryLevel(), BluetoothCacheMode::Uncached);
+                        if (WaitAsyncCompleted(charUncachedOp, 4)) {
+                            charResult = charUncachedOp.GetResults();
+                        }
+                    }
+                    if (charResult && charResult.Status() == GattCommunicationStatus::Success && charResult.Characteristics().Size() > 0) {
+                        foundChar = true;
+                        auto ch = charResult.Characteristics().GetAt(0);
+                        // Prefer Uncached for fresh reading; fall back to Cached if sleepy mouse didn't wake
+                        GattReadResult valResult = nullptr;
+                        auto valOp = ch.ReadValueAsync(BluetoothCacheMode::Uncached);
+                        if (WaitAsyncCompleted(valOp, 4)) {
+                            valResult = valOp.GetResults();
+                        }
+                        if (!valResult || valResult.Status() != GattCommunicationStatus::Success) {
+                            auto valCachedOp = ch.ReadValueAsync(BluetoothCacheMode::Cached);
+                            if (WaitAsyncCompleted(valCachedOp, 4)) {
+                                valResult = valCachedOp.GetResults();
+                            }
+                        }
+                        if (valResult && valResult.Status() == GattCommunicationStatus::Success &&
+                            valResult.Value() && valResult.Value().Length() >= 1)
+                        {
+                            auto reader = DataReader::FromBuffer(valResult.Value());
+                            uint8_t lvl = reader.ReadByte();
+                            if (lvl <= 100) {
+                                res.percent = static_cast<int>(lvl);
+                                res.note = L"GATT 0x180F/0x2A19";
+                            }
+                        }
+                    }
+                }
+                try { svc.Close(); } catch (...) {}
+            }
+            if (!res.percent.has_value()) {
+                res.note = foundChar ? L"GATT read failed" : L"No BatteryLevel characteristic";
             }
         } else {
             res.note = L"No GATT Battery Service";
@@ -515,43 +523,51 @@ namespace BatteryReader {
 
 DeviceKind ClassifyByName(const std::wstring& name) {
     std::wstring low = ToLower(name);
-    if (ContainsAny(low, {
-        L"mouse", L"mx master", L"mx anywhere", L"mx vertical", L"mx ergo",
-        L"pebble", L"m350", L"m590", L"m720", L"m650", L"lift",
-        L"g305", L"g604", L"g903", L"pro x superlight",
-        L"deathadder", L"basilisk", L"orochi", L"viper", L"pro click",
-        L"aerox", L"rival", L"arc touch", L"sculpt", L"trackball", L"trackpad"
-    })) {
-        return DeviceKind::Mouse;
+
+    // Pass 1: Explicit device-type terms (prevents brand collisions like "Sony DualSense Controller" or "Pebble Keys")
+    if (ContainsAny(low, { L"controller", L"gamepad", L"xbox", L"dualsense", L"dualshock", L"8bitdo" })) {
+        return DeviceKind::Gamepad;
     }
     if (ContainsAny(low, {
-        L"airpods", L"earbud", L"buds", L"wf-", L"freebuds", L"jabra elite",
-        L"liberty", L"space a40", L"pixel buds", L"powerbeats", L"ear ("
-    })) {
-        if (low.find(L"airpods max") != std::wstring::npos) {
-            return DeviceKind::Headphones;
-        }
-        return DeviceKind::Earbuds;
-    }
-    if (ContainsAny(low, {
-        L"headphone", L"headset", L"wh-", L"quietcomfort", L"qc35", L"qc45", L"qc ultra",
-        L"xm3", L"xm4", L"xm5", L"bose", L"sennheiser", L"momentum", L"soundcore",
-        L"space q", L"space one", L"q30", L"q35", L"q45", L"beats", L"studio3",
-        L"arctis", L"barracuda", L"opus", L"jabra", L"marshall", L"major",
-        L"ath-", L"jbl", L"sony", L"anker", L"earphone", L"audio"
-    })) {
-        return DeviceKind::Headphones;
-    }
-    if (ContainsAny(low, {
-        L"keyboard", L"keychron", L"mx keys", L"k380", L"k780", L"k860",
-        L"nuphy", L"hhkb", L"anne pro", L"magic keyboard", L"g915"
+        L"keyboard", L"keychron", L"mx keys", L"pebble keys", L"k380", L"k780", L"k860",
+        L"nuphy", L"hhkb", L"anne pro", L"g915"
     })) {
         return DeviceKind::Keyboard;
     }
+    if (ContainsAny(low, { L"mouse", L"trackball", L"trackpad" })) {
+        return DeviceKind::Mouse;
+    }
+    if (low.find(L"airpods max") != std::wstring::npos) {
+        return DeviceKind::Headphones;
+    }
+    if (ContainsAny(low, { L"airpods", L"earbud", L"buds", L"wf-", L"freebuds", L"powerbeats", L"ear (" })) {
+        return DeviceKind::Earbuds;
+    }
+    if (ContainsAny(low, { L"headphone", L"headset", L"earphone" })) {
+        return DeviceKind::Headphones;
+    }
+
+    // Pass 2: Well-known model and brand families
     if (ContainsAny(low, {
-        L"controller", L"gamepad", L"xbox", L"dualsense", L"dualshock", L"8bitdo"
+        L"mx master", L"mx anywhere", L"mx vertical", L"mx ergo",
+        L"pebble", L"m350", L"m590", L"m720", L"m650", L"lift",
+        L"g305", L"g604", L"g903", L"pro x superlight",
+        L"deathadder", L"basilisk", L"orochi", L"viper", L"pro click",
+        L"aerox", L"rival", L"arc touch", L"sculpt"
     })) {
-        return DeviceKind::Gamepad;
+        return DeviceKind::Mouse;
+    }
+    if (ContainsAny(low, { L"jabra elite", L"liberty", L"space a40" })) {
+        return DeviceKind::Earbuds;
+    }
+    if (ContainsAny(low, {
+        L"wh-", L"quietcomfort", L"qc35", L"qc45", L"qc ultra",
+        L"xm3", L"xm4", L"xm5", L"bose", L"sennheiser", L"momentum", L"soundcore",
+        L"space q", L"space one", L"q30", L"q35", L"q45", L"beats", L"studio3",
+        L"arctis", L"barracuda", L"opus", L"jabra", L"marshall", L"major",
+        L"ath-", L"jbl", L"sony", L"anker", L"audio"
+    })) {
+        return DeviceKind::Headphones;
     }
     return DeviceKind::Bluetooth;
 }
@@ -670,7 +686,7 @@ ScanResult ScanAll(bool includeLaptop, bool includeDisconnected) {
         BtCandidate* target = nullptr;
         if (auto mac = ExtractAnyMacFromInstanceId(n.instanceId)) {
             target = &ensureByMac(*mac, L"bt");
-        } else if (!n.containerId.empty()) {
+        } else if (isValidContainerId(n.containerId)) {
             auto cit = containerToKey.find(n.containerId);
             if (cit != containerToKey.end() && byKey.count(cit->second)) {
                 target = &byKey[cit->second];
@@ -736,22 +752,42 @@ ScanResult ScanAll(bool includeLaptop, bool includeDisconnected) {
     }
 
     for (const auto& n : bthleDevNodes) {
-        if (!n.batteryLevel.has_value()) continue;
+        bool hasBatt = n.batteryLevel.has_value();
+        bool childConnected = n.isConnected.value_or(false);
+        if (!hasBatt && !childConnected) continue;
+
         BtCandidate* target = nullptr;
+        std::wstring mapKey;
         if (isValidContainerId(n.containerId)) {
             auto cit = containerToKey.find(n.containerId);
             if (cit != containerToKey.end() && byKey.count(cit->second)) {
-                target = &byKey[cit->second];
+                mapKey = cit->second;
+                target = &byKey[mapKey];
             }
         }
         if (!target) {
             if (auto mac = ExtractAnyMacFromInstanceId(n.instanceId)) {
+                mapKey = FormatMac(*mac);
                 target = &ensureByMac(*mac, L"ble");
             }
         }
         if (target) {
-            target->percent = *n.batteryLevel;
-            target->sourceLabel = L"Bluetooth LE";
+            if (childConnected) {
+                target->connected = true;
+                uint64_t probeMac = 0;
+                if (auto nodeMac = ExtractAnyMacFromInstanceId(n.instanceId)) {
+                    probeMac = *nodeMac;
+                } else if (target->mac != 0 && target->key.rfind(L"ble:", 0) == 0) {
+                    probeMac = target->mac;
+                }
+                if (probeMac != 0 && !mapKey.empty()) {
+                    bleMacsToProbe[probeMac] = mapKey;
+                }
+            }
+            if (hasBatt) {
+                target->percent = *n.batteryLevel;
+                target->sourceLabel = L"Bluetooth LE";
+            }
             if (target->name.empty() && !n.friendlyName.empty()) {
                 target->name = StripProfileSuffix(n.friendlyName);
             }

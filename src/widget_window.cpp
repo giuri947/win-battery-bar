@@ -14,6 +14,7 @@
 
 namespace {
 
+constexpr const wchar_t* kHostClass   = L"WinBatteryBarHostWnd";
 constexpr const wchar_t* kWidgetClass = L"WinBatteryBarTaskbarWidget";
 
 constexpr UINT WM_APP_SCAN_DONE = WM_APP + 101;
@@ -35,12 +36,17 @@ constexpr UINT kCmdToggleDeviceBase = 2000;
 WidgetWindow::WidgetWindow(const LaunchOptions& opts)
     : m_opts(opts)
 {
-    m_settings = SettingsStore::Load();
+    if (m_opts.demoMode) {
+        // Keep demo launches isolated from persisted user Registry settings
+        m_settings = AppSettings{};
+        if (m_opts.demoPreset == 2) {
+            m_settings.showLaptop = false;
+        }
+    } else {
+        m_settings = SettingsStore::Load();
+    }
     if (m_opts.forceCompact) {
         m_settings.compactMode = true;
-    }
-    if (m_opts.demoMode && m_opts.demoPreset == 2) {
-        m_settings.showLaptop = false;
     }
 }
 
@@ -48,9 +54,61 @@ WidgetWindow::~WidgetWindow() {
     Destroy();
 }
 
+void WidgetWindow::SaveSettingsIfAllowed() {
+    if (!m_opts.demoMode) {
+        SettingsStore::Save(m_settings);
+    }
+}
+
+bool WidgetWindow::CreateWidgetHwnd() {
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        return true;
+    }
+    m_useColorKeyFallback = false;
+    m_lastRenderOk = false;
+    m_lastRenderErr = 0;
+    m_trackingMouse = false;
+    m_hoveredIndex = -1;
+
+    m_hwnd = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        kWidgetClass,
+        L"WinBatteryBar",
+        WS_POPUP,
+        0, 0, 80, 28,
+        nullptr, nullptr, m_hInst, this);
+    if (!m_hwnd) {
+        return false;
+    }
+
+    m_dock.Attach(m_hwnd);
+    return true;
+}
+
 bool WidgetWindow::Create(HINSTANCE hInst) {
     m_hInst = hInst;
     m_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
+
+    // 1. Register and create hidden top-level host window so we always receive system broadcasts
+    //    (TaskbarCreated, WM_POWERBROADCAST, WM_DEVICECHANGE, WM_SETTINGCHANGE, WM_ENDSESSION)
+    //    and stay alive if explorer.exe restarts and destroys child windows of ReBarWindow32.
+    WNDCLASSEXW hostWc = {};
+    hostWc.cbSize = sizeof(hostWc);
+    hostWc.lpfnWndProc = StaticHostWndProc;
+    hostWc.hInstance = hInst;
+    hostWc.lpszClassName = kHostClass;
+    RegisterClassExW(&hostWc);
+
+    m_hostHwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        kHostClass,
+        L"WinBatteryBarHost",
+        WS_POPUP,
+        0, 0, 0, 0,
+        nullptr, nullptr, hInst, this);
+    if (!m_hostHwnd) {
+        return false;
+    }
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -62,20 +120,9 @@ bool WidgetWindow::Create(HINSTANCE hInst) {
 
     m_tooltip.Create(hInst);
 
-    m_hwnd = CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        kWidgetClass,
-        L"WinBatteryBar",
-        WS_POPUP,
-        0, 0, 80, 28,
-        nullptr, nullptr, hInst, this);
-
-    if (!m_hwnd) {
+    if (!CreateWidgetHwnd()) {
         return false;
     }
-
-    // Attach to Windows 10 taskbar (ReBarWindow32)
-    m_dock.Attach(m_hwnd);
 
     if (m_opts.demoMode) {
         m_allDevices = BatteryReader::BuildDemoDevices(m_opts.demoPreset);
@@ -117,24 +164,31 @@ bool WidgetWindow::Create(HINSTANCE hInst) {
 
     WriteStatusFile();
 
-    // Periodic taskbar layout guard (handles Explorer layout updates, DPI/theme changes, taskbar auto-hide)
-    SetTimer(m_hwnd, kTimerLayout, 400, nullptr);
+    // Periodic taskbar layout guard on the persistent top-level host window
+    SetTimer(m_hostHwnd, kTimerLayout, 400, nullptr);
     return true;
 }
 
 void WidgetWindow::Destroy() {
     StopWorkerThread();
     m_tooltip.Destroy();
+    if (m_hostHwnd && IsWindow(m_hostHwnd)) {
+        KillTimer(m_hostHwnd, kTimerLayout);
+        KillTimer(m_hostHwnd, kTimerFlashEnd);
+        KillTimer(m_hostHwnd, kTimerDebounce);
+    }
     if (m_hwnd && IsWindow(m_hwnd)) {
-        KillTimer(m_hwnd, kTimerLayout);
-        KillTimer(m_hwnd, kTimerFlashEnd);
-        KillTimer(m_hwnd, kTimerDebounce);
         m_dock.DetachAndRestore(m_hwnd);
         DestroyWindow(m_hwnd);
     } else {
         m_dock.DetachAndRestore(nullptr);
     }
     m_hwnd = nullptr;
+
+    if (m_hostHwnd && IsWindow(m_hostHwnd)) {
+        DestroyWindow(m_hostHwnd);
+    }
+    m_hostHwnd = nullptr;
 }
 
 void WidgetWindow::StartWorkerThread() {
@@ -155,10 +209,10 @@ void WidgetWindow::StopWorkerThread() {
 }
 
 void WidgetWindow::TriggerScanNow(bool showFlash) {
-    if (showFlash && m_hwnd) {
+    if (showFlash && m_hwnd && m_hostHwnd) {
         m_refreshFlash = true;
         RedrawOnly();
-        SetTimer(m_hwnd, kTimerFlashEnd, 180, nullptr);
+        SetTimer(m_hostHwnd, kTimerFlashEnd, 180, nullptr);
     }
     if (m_opts.demoMode) return;
     {
@@ -175,11 +229,13 @@ void WidgetWindow::WorkerLoop() {
         // Apartment may already be initialized on this thread
     }
 
+    const int pollIntervalSec = std::clamp(m_settings.pollIntervalSec, 5, 300);
+    HWND hostTarget = m_hostHwnd;
+
     while (true) {
         {
             std::unique_lock<std::mutex> lk(m_workerMu);
-            int interval = std::clamp(m_settings.pollIntervalSec, 5, 300);
-            m_workerCv.wait_for(lk, std::chrono::seconds(interval), [&]() {
+            m_workerCv.wait_for(lk, std::chrono::seconds(pollIntervalSec), [&]() {
                 return m_stopWorker || m_scanRequested;
             });
             if (m_stopWorker) break;
@@ -194,8 +250,8 @@ void WidgetWindow::WorkerLoop() {
             m_pendingResult = std::move(scan);
         }
 
-        if (m_hwnd && IsWindow(m_hwnd)) {
-            PostMessageW(m_hwnd, WM_APP_SCAN_DONE, 0, 0);
+        if (hostTarget && IsWindow(hostTarget)) {
+            PostMessageW(hostTarget, WM_APP_SCAN_DONE, 0, 0);
         }
     }
 
@@ -226,7 +282,14 @@ void WidgetWindow::ApplyFilteredDevices() {
 }
 
 void WidgetWindow::UpdateDockAndRedraw(bool forceReposition) {
-    if (!m_hwnd || !IsWindow(m_hwnd)) return;
+    // If Explorer restarted and destroyed our child window, recreate & re-attach cleanly
+    if (!m_hwnd || !IsWindow(m_hwnd)) {
+        m_hwnd = nullptr;
+        if (!CreateWidgetHwnd()) {
+            return;
+        }
+        forceReposition = true;
+    }
 
     if (!m_dock.IsTaskbarAlive()) {
         if (!m_dock.Attach(m_hwnd)) {
@@ -252,6 +315,10 @@ void WidgetWindow::UpdateDockAndRedraw(bool forceReposition) {
 
     bool themeChanged = (newMetrics.lightTheme != m_metrics.lightTheme);
     bool dpiChanged = (newMetrics.dpi != m_metrics.dpi);
+    bool rectChanged = (newMetrics.screenRect.left != m_metrics.screenRect.left ||
+                        newMetrics.screenRect.top != m_metrics.screenRect.top ||
+                        newMetrics.screenRect.right != m_metrics.screenRect.right ||
+                        newMetrics.screenRect.bottom != m_metrics.screenRect.bottom);
     m_metrics = newMetrics;
     if (m_opts.forceLightTheme) {
         m_metrics.lightTheme = true;
@@ -259,6 +326,9 @@ void WidgetWindow::UpdateDockAndRedraw(bool forceReposition) {
 
     if (forceReposition || sizeChanged || themeChanged || dpiChanged || !m_lastRenderOk) {
         RedrawOnly();
+    }
+    if (m_tooltip.IsVisible() && (rectChanged || sizeChanged || themeChanged || dpiChanged)) {
+        UpdateTooltipForHover();
     }
 }
 
@@ -325,14 +395,20 @@ void WidgetWindow::UpdateTooltipForHover() {
 
     bool light = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
     if (m_visibleDevices.empty()) {
-        m_tooltip.ShowEmpty(anchorScreen, m_metrics.dpi, light);
+        m_tooltip.ShowEmpty(anchorScreen, m_metrics.dpi, light, m_metrics.horizontal);
     } else if (m_hoveredIndex < static_cast<int>(m_visibleDevices.size())) {
-        m_tooltip.ShowForDevice(m_visibleDevices[static_cast<size_t>(m_hoveredIndex)], anchorScreen, m_metrics.dpi, light);
+        m_tooltip.ShowForDevice(m_visibleDevices[static_cast<size_t>(m_hoveredIndex)],
+            anchorScreen, m_metrics.dpi, light, m_metrics.horizontal);
     }
 }
 
 void WidgetWindow::ShowContextMenu(POINT screenPt) {
     m_tooltip.Hide();
+    if (m_hoveredIndex != -1) {
+        m_hoveredIndex = -1;
+        m_trackingMouse = false;
+        RedrawOnly();
+    }
 
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
@@ -373,15 +449,28 @@ void WidgetWindow::ShowContextMenu(POINT screenPt) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kCmdExit, L"Exit WinBatteryBar");
 
-    // Standard Win32 requirement so clicking outside dismisses the menu cleanly
-    SetForegroundWindow(m_hwnd);
+    // Choose menu alignment based on taskbar screen position so it never opens off-screen
+    UINT alignFlags = TPM_BOTTOMALIGN | TPM_LEFTALIGN;
+    HMONITOR mon = MonitorFromPoint(screenPt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(mi);
+    if (GetMonitorInfoW(mon, &mi)) {
+        int midY = (mi.rcMonitor.top + mi.rcMonitor.bottom) / 2;
+        if (screenPt.y < midY) {
+            alignFlags = TPM_TOPALIGN | TPM_LEFTALIGN;
+        }
+    }
+
+    // Use top-level m_hostHwnd so SetForegroundWindow succeeds and outside clicks dismiss cleanly
+    HWND owner = (m_hostHwnd && IsWindow(m_hostHwnd)) ? m_hostHwnd : m_hwnd;
+    SetForegroundWindow(owner);
     UINT cmd = TrackPopupMenuEx(
         menu,
-        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON | alignFlags,
         screenPt.x, screenPt.y,
-        m_hwnd,
+        owner,
         nullptr);
-    PostMessageW(m_hwnd, WM_NULL, 0, 0);
+    PostMessageW(owner, WM_NULL, 0, 0);
 
     DestroyMenu(menu);
 
@@ -391,23 +480,23 @@ void WidgetWindow::ShowContextMenu(POINT screenPt) {
         TriggerScanNow(true);
     } else if (cmd == kCmdShowLaptop) {
         m_settings.showLaptop = !m_settings.showLaptop;
-        SettingsStore::Save(m_settings);
+        SaveSettingsIfAllowed();
         ApplyFilteredDevices();
         UpdateDockAndRedraw(true);
     } else if (cmd == kCmdShowDisconnected) {
         m_settings.showDisconnected = !m_settings.showDisconnected;
-        SettingsStore::Save(m_settings);
+        SaveSettingsIfAllowed();
         ApplyFilteredDevices();
         UpdateDockAndRedraw(true);
     } else if (cmd == kCmdCompactMode) {
         m_settings.compactMode = !m_settings.compactMode;
-        SettingsStore::Save(m_settings);
+        SaveSettingsIfAllowed();
         UpdateDockAndRedraw(true);
     } else if (cmd == kCmdAutoStart) {
         bool target = !m_settings.autoStart;
         if (SettingsStore::SetAutoStartEnabled(target)) {
             m_settings.autoStart = target;
-            SettingsStore::Save(m_settings);
+            SaveSettingsIfAllowed();
         }
     } else if (cmd == kCmdCopyDiagnostics) {
         CopyDiagnosticsToClipboard();
@@ -417,7 +506,7 @@ void WidgetWindow::ShowContextMenu(POINT screenPt) {
         size_t idx = static_cast<size_t>(cmd - kCmdToggleDeviceBase);
         if (idx < m_allDevices.size()) {
             SettingsStore::ToggleDeviceHidden(m_settings, m_allDevices[idx].id);
-            SettingsStore::Save(m_settings);
+            SaveSettingsIfAllowed();
             ApplyFilteredDevices();
             UpdateDockAndRedraw(true);
         }
@@ -430,12 +519,14 @@ void WidgetWindow::CopyDiagnosticsToClipboard() {
        << L"Embedded: " << (m_metrics.embedded ? L"yes" : L"no")
        << L" | Win11: " << (m_metrics.isWin11 ? L"yes" : L"no")
        << L" | DPI: " << m_metrics.dpi
-       << L" | LightTheme: " << (m_metrics.lightTheme ? L"yes" : L"no") << L"\r\n"
+       << L" | LightTheme: " << (m_metrics.lightTheme ? L"yes" : L"no")
+       << L" | Render: " << (m_useColorKeyFallback ? L"colorkey" : L"ulw") << L"\r\n"
        << L"Visible devices: " << m_visibleDevices.size() << L" / " << m_allDevices.size() << L"\r\n\r\n"
        << m_lastDiagnostics;
 
     std::wstring text = ss.str();
-    if (OpenClipboard(m_hwnd)) {
+    HWND clipOwner = (m_hostHwnd && IsWindow(m_hostHwnd)) ? m_hostHwnd : m_hwnd;
+    if (OpenClipboard(clipOwner)) {
         EmptyClipboard();
         size_t bytes = (text.size() + 1) * sizeof(wchar_t);
         HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
@@ -444,7 +535,9 @@ void WidgetWindow::CopyDiagnosticsToClipboard() {
             if (ptr) {
                 memcpy(ptr, text.c_str(), bytes);
                 GlobalUnlock(hMem);
-                SetClipboardData(CF_UNICODETEXT, hMem);
+                if (!SetClipboardData(CF_UNICODETEXT, hMem)) {
+                    GlobalFree(hMem);
+                }
             } else {
                 GlobalFree(hMem);
             }
@@ -483,59 +576,47 @@ void WidgetWindow::WriteStatusFile() {
     }
 }
 
-LRESULT CALLBACK WidgetWindow::StaticWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+LRESULT CALLBACK WidgetWindow::StaticHostWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     WidgetWindow* self = nullptr;
     if (msg == WM_NCCREATE) {
         auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
         self = reinterpret_cast<WidgetWindow*>(cs->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-        self->m_hwnd = hwnd;
+        self->m_hostHwnd = hwnd;
     } else {
         self = reinterpret_cast<WidgetWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     }
 
     if (self) {
-        return self->WndProc(msg, wp, lp);
+        return self->HostWndProc(msg, wp, lp);
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-LRESULT WidgetWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
+LRESULT WidgetWindow::HostWndProc(UINT msg, WPARAM wp, LPARAM lp) {
     if (m_taskbarCreatedMsg != 0 && msg == m_taskbarCreatedMsg) {
-        // Explorer restarted: cleanly re-attach to the new taskbar
-        m_dock.Attach(m_hwnd);
+        // Explorer restarted: recreate child if destroyed, otherwise re-attach cleanly to the new taskbar
+        if (!m_hwnd || !IsWindow(m_hwnd)) {
+            m_hwnd = nullptr;
+            CreateWidgetHwnd();
+        } else {
+            m_dock.Attach(m_hwnd);
+        }
         UpdateDockAndRedraw(true);
         return 0;
     }
 
     switch (msg) {
-    case WM_MOUSEACTIVATE:
-        return MA_NOACTIVATE;
-
-    case WM_ERASEBKGND:
-        return 1;
-
-    case WM_PAINT: {
-        PAINTSTRUCT ps = {};
-        HDC hdc = BeginPaint(m_hwnd, &ps);
-        if (m_useColorKeyFallback && hdc) {
-            bool light = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
-            Renderer::RenderToPaintDC(hdc, m_visibleDevices, m_layout, m_metrics.dpi, light, m_hoveredIndex, m_refreshFlash);
-        }
-        EndPaint(m_hwnd, &ps);
-        return 0;
-    }
-
     case WM_TIMER:
         if (wp == kTimerLayout) {
             UpdateDockAndRedraw(false);
             WriteStatusFile();
         } else if (wp == kTimerFlashEnd) {
-            KillTimer(m_hwnd, kTimerFlashEnd);
+            KillTimer(m_hostHwnd, kTimerFlashEnd);
             m_refreshFlash = false;
             RedrawOnly();
         } else if (wp == kTimerDebounce) {
-            KillTimer(m_hwnd, kTimerDebounce);
+            KillTimer(m_hostHwnd, kTimerDebounce);
             TriggerScanNow(false);
         }
         return 0;
@@ -554,6 +635,77 @@ LRESULT WidgetWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             UpdateTooltipForHover();
         }
         WriteStatusFile();
+        return 0;
+    }
+
+    case WM_POWERBROADCAST:
+        if (wp == PBT_APMPOWERSTATUSCHANGE || wp == PBT_APMRESUMEAUTOMATIC) {
+            SetTimer(m_hostHwnd, kTimerDebounce, 500, nullptr);
+        }
+        return TRUE;
+
+    case WM_DEVICECHANGE:
+        if (wp == DBT_DEVNODES_CHANGED || wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
+            SetTimer(m_hostHwnd, kTimerDebounce, 1200, nullptr);
+        }
+        return TRUE;
+
+    case WM_SETTINGCHANGE:
+    case WM_DISPLAYCHANGE:
+    case WM_DPICHANGED:
+        UpdateDockAndRedraw(true);
+        return 0;
+
+    case WM_ENDSESSION:
+        if (wp) {
+            m_dock.DetachAndRestore(m_hwnd);
+        }
+        return 0;
+
+    case WM_CLOSE:
+        PostQuitMessage(0);
+        return 0;
+
+    default:
+        break;
+    }
+
+    return DefWindowProcW(m_hostHwnd, msg, wp, lp);
+}
+
+LRESULT CALLBACK WidgetWindow::StaticWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    WidgetWindow* self = nullptr;
+    if (msg == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        self = reinterpret_cast<WidgetWindow*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        self->m_hwnd = hwnd;
+    } else {
+        self = reinterpret_cast<WidgetWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    }
+
+    if (self) {
+        return self->WndProc(msg, wp, lp);
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+LRESULT WidgetWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps = {};
+        HDC hdc = BeginPaint(m_hwnd, &ps);
+        if (m_useColorKeyFallback && hdc) {
+            bool light = m_opts.forceLightTheme ? true : m_metrics.lightTheme;
+            Renderer::RenderToPaintDC(hdc, m_visibleDevices, m_layout, m_metrics.dpi, light, m_hoveredIndex, m_refreshFlash);
+        }
+        EndPaint(m_hwnd, &ps);
         return 0;
     }
 
@@ -597,20 +749,6 @@ LRESULT WidgetWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
 
-    case WM_POWERBROADCAST:
-        if (wp == PBT_APMPOWERSTATUSCHANGE || wp == PBT_APMRESUMEAUTOMATIC) {
-            SetTimer(m_hwnd, kTimerDebounce, 500, nullptr);
-        }
-        return TRUE;
-
-    case WM_DEVICECHANGE:
-        if (wp == DBT_DEVNODES_CHANGED || wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
-            SetTimer(m_hwnd, kTimerDebounce, 1200, nullptr);
-        }
-        return TRUE;
-
-    case WM_SETTINGCHANGE:
-    case WM_DISPLAYCHANGE:
     case WM_DPICHANGED:
         UpdateDockAndRedraw(true);
         return 0;
@@ -620,7 +758,9 @@ LRESULT WidgetWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_DESTROY:
+        m_tooltip.Hide();
         m_dock.DetachAndRestore(m_hwnd);
+        m_hwnd = nullptr;
         return 0;
 
     default:

@@ -101,6 +101,10 @@ bool TaskbarDock::Attach(HWND widgetHwnd) {
     m_hasShrunk = false;
     m_appliedShrink = 0;
     m_expectedMinLen = 0;
+    m_lastBarW = 0;
+    m_lastBarH = 0;
+    m_lastWidgetW = 0;
+    m_lastWidgetH = 0;
 
     if (!FindHandles() || !m_hParent) {
         return false;
@@ -149,6 +153,8 @@ void TaskbarDock::RestoreTaskList() {
     m_hasShrunk = false;
     m_appliedShrink = 0;
     m_expectedMinLen = 0;
+    m_lastBarW = 0;
+    m_lastBarH = 0;
 }
 
 void TaskbarDock::DetachAndRestore(HWND widgetHwnd) {
@@ -231,9 +237,16 @@ bool TaskbarDock::UpdateLayout(HWND widgetHwnd, int widgetW, int widgetH, bool f
         int leftSpace = rcMin.left - rcBar.left;
         int topSpace  = rcMin.top - rcBar.top;
 
+        RECT rcWidget = {};
+        bool haveWidgetRect = (GetWindowRect(widgetHwnd, &rcWidget) != FALSE);
+
         if (m_horizontal) {
             bool explorerResetMin = (!m_hasShrunk || std::abs(minW - m_expectedMinLen) > 2);
+            bool barResized = (m_lastBarW > 0 && std::abs(barW - m_lastBarW) > 1);
             int fullW = explorerResetMin ? minW : (minW + m_appliedShrink);
+            if (!explorerResetMin && barResized) {
+                fullW = std::clamp(fullW + (barW - m_lastBarW), 0, std::max(0, barW - leftSpace));
+            }
 
             int rightMargin = ScalePx(4, dpi);
             int desiredShrink = widgetW + rightMargin;
@@ -242,9 +255,17 @@ bool TaskbarDock::UpdateLayout(HWND widgetHwnd, int widgetW, int widgetH, bool f
             int newMinW = fullW - shrink;
 
             int wx = leftSpace + newMinW + ScalePx(2, dpi);
+            int maxWx = std::max(0, barW - widgetW - ScalePx(2, dpi));
+            wx = std::min(wx, maxWx);
             int wy = std::max(0, (barH - widgetH) / 2);
 
-            if (forceReposition || sizeChanged || explorerResetMin || minW != newMinW) {
+            bool drifted = !haveWidgetRect ||
+                std::abs((rcWidget.left - rcBar.left) - wx) > 1 ||
+                std::abs((rcWidget.top - rcBar.top) - wy) > 1 ||
+                (rcWidget.right - rcWidget.left) != widgetW ||
+                (rcWidget.bottom - rcWidget.top) != widgetH;
+
+            if (forceReposition || sizeChanged || explorerResetMin || barResized || drifted || minW != newMinW) {
                 if (minW != newMinW) {
                     MoveWindow(m_hTaskList, leftSpace, topSpace, newMinW, minH, TRUE);
                 }
@@ -253,6 +274,8 @@ bool TaskbarDock::UpdateLayout(HWND widgetHwnd, int widgetW, int widgetH, bool f
                 m_hasShrunk = true;
                 m_appliedShrink = shrink;
                 m_expectedMinLen = newMinW;
+                m_lastBarW = barW;
+                m_lastBarH = barH;
                 m_lastWidgetW = widgetW;
                 m_lastWidgetH = widgetH;
             }
@@ -267,7 +290,11 @@ bool TaskbarDock::UpdateLayout(HWND widgetHwnd, int widgetW, int widgetH, bool f
             };
         } else {
             bool explorerResetMin = (!m_hasShrunk || std::abs(minH - m_expectedMinLen) > 2);
+            bool barResized = (m_lastBarH > 0 && std::abs(barH - m_lastBarH) > 1);
             int fullH = explorerResetMin ? minH : (minH + m_appliedShrink);
+            if (!explorerResetMin && barResized) {
+                fullH = std::clamp(fullH + (barH - m_lastBarH), 0, std::max(0, barH - topSpace));
+            }
 
             int bottomMargin = ScalePx(4, dpi);
             int desiredShrink = widgetH + bottomMargin;
@@ -277,8 +304,16 @@ bool TaskbarDock::UpdateLayout(HWND widgetHwnd, int widgetW, int widgetH, bool f
 
             int wx = std::max(0, (barW - widgetW) / 2);
             int wy = topSpace + newMinH + ScalePx(2, dpi);
+            int maxWy = std::max(0, barH - widgetH - ScalePx(2, dpi));
+            wy = std::min(wy, maxWy);
 
-            if (forceReposition || sizeChanged || explorerResetMin || minH != newMinH) {
+            bool drifted = !haveWidgetRect ||
+                std::abs((rcWidget.left - rcBar.left) - wx) > 1 ||
+                std::abs((rcWidget.top - rcBar.top) - wy) > 1 ||
+                (rcWidget.right - rcWidget.left) != widgetW ||
+                (rcWidget.bottom - rcWidget.top) != widgetH;
+
+            if (forceReposition || sizeChanged || explorerResetMin || barResized || drifted || minH != newMinH) {
                 if (minH != newMinH) {
                     MoveWindow(m_hTaskList, leftSpace, topSpace, minW, newMinH, TRUE);
                 }
@@ -287,6 +322,8 @@ bool TaskbarDock::UpdateLayout(HWND widgetHwnd, int widgetW, int widgetH, bool f
                 m_hasShrunk = true;
                 m_appliedShrink = shrink;
                 m_expectedMinLen = newMinH;
+                m_lastBarW = barW;
+                m_lastBarH = barH;
                 m_lastWidgetW = widgetW;
                 m_lastWidgetH = widgetH;
             }
@@ -303,21 +340,37 @@ bool TaskbarDock::UpdateLayout(HWND widgetHwnd, int widgetW, int widgetH, bool f
         return true;
     }
 
-    // Fallback / Windows 11 placement: immediately left of TrayNotifyWnd
+    // Fallback / Windows 11 placement: immediately before TrayNotifyWnd
     RECT rcTray = {};
     int wx = 0;
     int wy = 0;
-    if (m_hTrayNotify && IsWindow(m_hTrayNotify) && GetWindowRect(m_hTrayNotify, &rcTray)) {
-        int trayRelX = rcTray.left - rcTaskbar.left;
-        wx = std::max(ScalePx(4, dpi), trayRelX - widgetW - ScalePx(6, dpi));
+    bool haveTray = (m_hTrayNotify && IsWindow(m_hTrayNotify) && GetWindowRect(m_hTrayNotify, &rcTray));
+    if (m_horizontal) {
+        if (haveTray) {
+            int trayRelX = rcTray.left - rcTaskbar.left;
+            wx = std::max(ScalePx(4, dpi), trayRelX - widgetW - ScalePx(6, dpi));
+        } else {
+            wx = std::max(ScalePx(4, dpi), tbW - widgetW - ScalePx(180, dpi));
+        }
         wy = std::max(0, (tbH - widgetH) / 2);
     } else {
-        wx = std::max(ScalePx(4, dpi), tbW - widgetW - ScalePx(180, dpi));
-        wy = std::max(0, (tbH - widgetH) / 2);
+        wx = std::max(0, (tbW - widgetW) / 2);
+        if (haveTray) {
+            int trayRelY = rcTray.top - rcTaskbar.top;
+            wy = std::max(ScalePx(4, dpi), trayRelY - widgetH - ScalePx(6, dpi));
+        } else {
+            wy = std::max(ScalePx(4, dpi), tbH - widgetH - ScalePx(180, dpi));
+        }
     }
 
+    RECT rcWidget = {};
+    bool haveWidgetRect = (GetWindowRect(widgetHwnd, &rcWidget) != FALSE);
+
     if (m_attached) {
-        if (forceReposition || sizeChanged) {
+        bool drifted = !haveWidgetRect ||
+            std::abs((rcWidget.left - rcTaskbar.left) - wx) > 1 ||
+            std::abs((rcWidget.top - rcTaskbar.top) - wy) > 1;
+        if (forceReposition || sizeChanged || drifted) {
             SetWindowPos(widgetHwnd, HWND_TOP, wx, wy, widgetW, widgetH, SWP_NOACTIVATE | SWP_SHOWWINDOW);
             m_lastWidgetW = widgetW;
             m_lastWidgetH = widgetH;
@@ -333,7 +386,10 @@ bool TaskbarDock::UpdateLayout(HWND widgetHwnd, int widgetW, int widgetH, bool f
     } else {
         int sx = rcTaskbar.left + wx;
         int sy = rcTaskbar.top + wy;
-        if (forceReposition || sizeChanged) {
+        bool drifted = !haveWidgetRect ||
+            std::abs(rcWidget.left - sx) > 1 ||
+            std::abs(rcWidget.top - sy) > 1;
+        if (forceReposition || sizeChanged || drifted) {
             SetWindowPos(widgetHwnd, HWND_TOPMOST, sx, sy, widgetW, widgetH, SWP_NOACTIVATE | SWP_SHOWWINDOW);
             m_lastWidgetW = widgetW;
             m_lastWidgetH = widgetH;

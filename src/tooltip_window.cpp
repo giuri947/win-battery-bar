@@ -52,10 +52,12 @@ std::wstring FormatUpdatedAgo(uint64_t updatedTickMs) {
     if (updatedTickMs == 0) return L"Just now";
     uint64_t now = GetTickCount64();
     uint64_t diffSec = (now >= updatedTickMs) ? ((now - updatedTickMs) / 1000) : 0;
-    if (diffSec < 5)  return L"Updated just now";
-    if (diffSec < 60) return L"Updated " + std::to_wstring(diffSec) + L"s ago";
+    if (diffSec < 5)    return L"Updated just now";
+    if (diffSec < 60)   return L"Updated " + std::to_wstring(diffSec) + L"s ago";
     uint64_t mins = diffSec / 60;
-    return L"Updated " + std::to_wstring(mins) + L"m ago";
+    if (mins < 60)      return L"Updated " + std::to_wstring(mins) + L"m ago";
+    uint64_t hrs = mins / 60;
+    return L"Updated " + std::to_wstring(hrs) + L"h ago";
 }
 
 } // namespace
@@ -101,7 +103,8 @@ void TooltipWindow::ShowForDevice(
     const BatteryDevice& dev,
     const RECT& anchorScreenRect,
     UINT dpi,
-    bool lightTheme)
+    bool lightTheme,
+    bool horizontal)
 {
     std::wstring pctText = (dev.percent >= 0) ? (std::to_wstring(dev.percent) + L"%") : L"--";
     std::wstring subtitle = dev.sourceLabel;
@@ -111,20 +114,21 @@ void TooltipWindow::ShowForDevice(
     }
     std::wstring footer = FormatUpdatedAgo(dev.updatedTickMs) + L" \x00B7 Click to refresh";
     RenderAndPosition(dev.name, pctText, subtitle, footer, dev.percent, dev.connected, dev.charging,
-        anchorScreenRect, dpi, lightTheme);
+        anchorScreenRect, dpi, lightTheme, horizontal);
 }
 
 void TooltipWindow::ShowEmpty(
     const RECT& anchorScreenRect,
     UINT dpi,
-    bool lightTheme)
+    bool lightTheme,
+    bool horizontal)
 {
     RenderAndPosition(
         L"WinBatteryBar",
         L"--",
         L"No Bluetooth battery devices connected",
         L"Right-click for options \x00B7 Click to scan",
-        -1, false, false, anchorScreenRect, dpi, lightTheme);
+        -1, false, false, anchorScreenRect, dpi, lightTheme, horizontal);
 }
 
 void TooltipWindow::RenderAndPosition(
@@ -137,9 +141,10 @@ void TooltipWindow::RenderAndPosition(
     bool charging,
     const RECT& anchorScreenRect,
     UINT dpi,
-    bool lightTheme)
+    bool lightTheme,
+    bool horizontal)
 {
-    if (!m_hwnd) return;
+    if (!m_hwnd || !IsWindow(m_hwnd)) return;
 
     using namespace Gdiplus;
 
@@ -150,7 +155,12 @@ void TooltipWindow::RenderAndPosition(
     int h = cardH + shadowPad * 2;
 
     HDC screenDC = GetDC(nullptr);
+    if (!screenDC) return;
     HDC memDC = CreateCompatibleDC(screenDC);
+    if (!memDC) {
+        ReleaseDC(nullptr, screenDC);
+        return;
+    }
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = w;
@@ -258,25 +268,43 @@ void TooltipWindow::RenderAndPosition(
         g.DrawString(footer.c_str(), -1, &footFont, footRect, &leftFmt, &bFoot);
     }
 
-    // Position cleanly above the taskbar top edge (or below if top taskbar), clamped to monitor bounds
+    // Position cleanly outside the taskbar edge, clamped to monitor bounds
     HMONITOR mon = MonitorFromRect(&anchorScreenRect, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi = {};
     mi.cbSize = sizeof(mi);
     GetMonitorInfoW(mon, &mi);
 
-    int anchorCenterX = (anchorScreenRect.left + anchorScreenRect.right) / 2;
-    int px = anchorCenterX - w / 2;
     int gap = ScI(12.0f, dpi);
-    int py = anchorScreenRect.top - h + shadowPad - gap;
+    int px = 0;
+    int py = 0;
 
-    if (py < mi.rcMonitor.top) {
-        // Taskbar is at top of screen: show cleanly below taskbar edge
-        py = anchorScreenRect.bottom - shadowPad + gap;
+    if (horizontal) {
+        int anchorCenterX = (anchorScreenRect.left + anchorScreenRect.right) / 2;
+        px = anchorCenterX - w / 2;
+        py = anchorScreenRect.top - h + shadowPad - gap;
+        if (py < mi.rcMonitor.top) {
+            // Taskbar is at top of screen: show cleanly below taskbar edge
+            py = anchorScreenRect.bottom - shadowPad + gap;
+        }
+    } else {
+        int anchorCenterY = (anchorScreenRect.top + anchorScreenRect.bottom) / 2;
+        int monMidX = (mi.rcMonitor.left + mi.rcMonitor.right) / 2;
+        py = anchorCenterY - h / 2;
+        if ((anchorScreenRect.left + anchorScreenRect.right) / 2 < monMidX) {
+            // Left-docked vertical taskbar: show to the right
+            px = anchorScreenRect.right - shadowPad + gap;
+        } else {
+            // Right-docked vertical taskbar: show to the left
+            px = anchorScreenRect.left - w + shadowPad - gap;
+        }
     }
 
     int minX = mi.rcMonitor.left + ScI(4.0f, dpi) - shadowPad;
     int maxX = mi.rcMonitor.right - w + shadowPad - ScI(4.0f, dpi);
+    int minY = mi.rcMonitor.top + ScI(4.0f, dpi) - shadowPad;
+    int maxY = mi.rcMonitor.bottom - h + shadowPad - ScI(4.0f, dpi);
     px = std::clamp(px, minX, std::max(minX, maxX));
+    py = std::clamp(py, minY, std::max(minY, maxY));
 
     POINT ptDst = { px, py };
     POINT ptSrc = { 0, 0 };

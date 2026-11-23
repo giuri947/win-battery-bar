@@ -50,6 +50,8 @@ private:
     bool m_hasShrunk = false;
     int m_appliedShrink = 0;
     int m_expectedMinLen = 0;
+    int m_lastBarW = 0;
+    int m_lastBarH = 0;
     int m_lastWidgetW = 0;
     int m_lastWidgetH = 0;
 };

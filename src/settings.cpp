@@ -45,12 +45,19 @@ namespace {
     }
 
     std::wstring GetExeQuotedPath() {
-        wchar_t path[MAX_PATH] = {};
-        DWORD len = GetModuleFileNameW(nullptr, path, MAX_PATH);
-        if (len == 0 || len >= MAX_PATH) {
-            return {};
+        std::wstring buf(MAX_PATH, L'\0');
+        while (buf.size() <= 32768) {
+            DWORD len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+            if (len == 0) {
+                return {};
+            }
+            if (len < buf.size() - 1) {
+                buf.resize(len);
+                return std::wstring(L"\"") + buf + L"\"";
+            }
+            buf.resize(buf.size() * 2);
         }
-        return std::wstring(L"\"") + path + L"\"";
+        return {};
     }
 }
 
@@ -111,8 +118,11 @@ bool IsAutoStartEnabled() {
 
 bool SetAutoStartEnabled(bool enable) {
     HKEY key = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunSubKey, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) {
-        return false;
+    LONG openRc = enable
+        ? RegCreateKeyExW(HKEY_CURRENT_USER, kRunSubKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr)
+        : RegOpenKeyExW(HKEY_CURRENT_USER, kRunSubKey, 0, KEY_SET_VALUE, &key);
+    if (openRc != ERROR_SUCCESS) {
+        return !enable && openRc == ERROR_FILE_NOT_FOUND;
     }
     bool ok = false;
     if (enable) {

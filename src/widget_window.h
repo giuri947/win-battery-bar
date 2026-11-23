@@ -33,8 +33,14 @@ public:
     HWND Handle() const { return m_hwnd; }
 
 private:
+    static LRESULT CALLBACK StaticHostWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+    LRESULT HostWndProc(UINT msg, WPARAM wp, LPARAM lp);
+
     static LRESULT CALLBACK StaticWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT WndProc(UINT msg, WPARAM wp, LPARAM lp);
+
+    bool CreateWidgetHwnd();
+    void SaveSettingsIfAllowed();
 
     void StartWorkerThread();
     void StopWorkerThread();
@@ -53,7 +59,8 @@ private:
 
     LaunchOptions m_opts;
     HINSTANCE m_hInst = nullptr;
-    HWND m_hwnd = nullptr;
+    HWND m_hostHwnd = nullptr;  // Hidden top-level listener window (receives broadcasts, owns context menu & timers)
+    HWND m_hwnd = nullptr;      // Child widget window embedded inside ReBarWindow32 / Shell_TrayWnd
     UINT m_taskbarCreatedMsg = 0;
 
     AppSettings m_settings;

@@ -15,12 +15,14 @@ public:
         const BatteryDevice& dev,
         const RECT& anchorScreenRect,
         UINT dpi,
-        bool lightTheme);
+        bool lightTheme,
+        bool horizontal = true);
 
     void ShowEmpty(
         const RECT& anchorScreenRect,
         UINT dpi,
-        bool lightTheme);
+        bool lightTheme,
+        bool horizontal = true);
 
     void Hide();
     bool IsVisible() const { return m_visible; }
@@ -36,7 +38,8 @@ private:
         bool charging,
         const RECT& anchorScreenRect,
         UINT dpi,
-        bool lightTheme);
+        bool lightTheme,
+        bool horizontal);
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
