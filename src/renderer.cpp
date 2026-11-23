@@ -554,7 +554,10 @@ bool RenderToPaintDC(
         g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
 
         // Fill with exact color-key so transparent regions show the real Win10 taskbar seamlessly
-        g.Clear(Gdiplus::Color(255, GetRValue(kColorKeyRgb), GetGValue(kColorKeyRgb), GetBValue(kColorKeyRgb)));
+        g.Clear(Gdiplus::Color(255,
+            static_cast<BYTE>(kColorKeyRgb & 0xFFu),
+            static_cast<BYTE>((kColorKeyRgb >> 8) & 0xFFu),
+            static_cast<BYTE>((kColorKeyRgb >> 16) & 0xFFu)));
 
         if (devices.empty()) {
             BatteryDevice placeholder;

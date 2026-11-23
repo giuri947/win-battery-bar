@@ -1,6 +1,7 @@
 #pragma once
 
 #include "battery_model.h"
+#include "battery_reader.h"
 #include "taskbar_dock.h"
 #include "renderer.h"
 #include "tooltip_window.h"
